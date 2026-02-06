@@ -1,0 +1,40 @@
+<!-- res/values/colors.xml -->
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark Theme Colors -->
+    <color name="dark_background">#0D0D0D</color>
+    <color name="dark_surface">#1A1A1A</color>
+    <color name="dark_surface_variant">#252525</color>
+    <color name="dark_card">#1E1E1E</color>
+    
+    <!-- Primary Colors -->
+    <color name="primary_purple">#6C63FF</color>
+    <color name="primary_purple_light">#8B85FF</color>
+    <color name="primary_purple_dark">#4A42DB</color>
+    
+    <!-- Accent Colors -->
+    <color name="accent_pink">#FF6B9D</color>
+    <color name="accent_blue">#00D9FF</color>
+    <color name="accent_green">#00FF88</color>
+    <color name="accent_orange">#FF9F43</color>
+    
+    <!-- Status Colors -->
+    <color name="online_green">#00FF88</color>
+    <color name="away_yellow">#FFD93D</color>
+    <color name="offline_gray">#6B6B6B</color>
+    <color name="busy_red">#FF4757</color>
+    
+    <!-- Text Colors -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#B0B0B0</color>
+    <color name="text_tertiary">#707070</color>
+    
+    <!-- Message Bubbles -->
+    <color name="sent_bubble">#6C63FF</color>
+    <color name="received_bubble">#2A2A2A</color>
+    
+    <!-- Misc -->
+    <color name="divider">#2A2A2A</color>
+    <color name="error_red">#FF4757</color>
+    <color name="success_green">#00FF88</color>
+</resources>
