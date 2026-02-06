@@ -27,7 +27,7 @@ class MessageRouter @Inject constructor(
 ) {
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     
     private val _typingUsers = MutableStateFlow<Map<String, TypingState>>(emptyMap())
     val typingUsers: StateFlow<Map<String, TypingState>> = _typingUsers.asStateFlow()
@@ -48,17 +48,21 @@ class MessageRouter @Inject constructor(
     }
     
     private suspend fun handlePacket(packet: P2PPacket) {
-        when (packet) {
-            is P2PPacket.EncryptedMessage -> handleEncryptedMessage(packet)
-            is P2PPacket.FileTransfer -> handleFileTransfer(packet)
-            is P2PPacket.TypingIndicator -> handleTypingIndicator(packet)
-            is P2PPacket.PresenceUpdate -> handlePresenceUpdate(packet)
-            is P2PPacket.MessageStatusUpdate -> handleMessageStatusUpdate(packet)
-            is P2PPacket.ReadReceipt -> handleReadReceipt(packet)
-            is P2PPacket.Reaction -> handleReaction(packet)
-            is P2PPacket.MessageEdit -> handleMessageEdit(packet)
-            is P2PPacket.MessageDelete -> handleMessageDelete(packet)
-            is P2PPacket.Handshake -> { /* Handled in P2PManager */ }
+        try {
+            when (packet) {
+                is P2PPacket.EncryptedMessage -> handleEncryptedMessage(packet)
+                is P2PPacket.FileTransfer -> handleFileTransfer(packet)
+                is P2PPacket.TypingIndicator -> handleTypingIndicator(packet)
+                is P2PPacket.PresenceUpdate -> handlePresenceUpdate(packet)
+                is P2PPacket.MessageStatusUpdate -> handleMessageStatusUpdate(packet)
+                is P2PPacket.ReadReceipt -> handleReadReceipt(packet)
+                is P2PPacket.Reaction -> handleReaction(packet)
+                is P2PPacket.MessageEdit -> handleMessageEdit(packet)
+                is P2PPacket.MessageDelete -> handleMessageDelete(packet)
+                is P2PPacket.Handshake -> { /* Handled in P2PManager */ }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
     
@@ -191,9 +195,9 @@ class MessageRouter @Inject constructor(
     
     private suspend fun handleReaction(packet: P2PPacket.Reaction) {
         if (packet.isRemoved) {
-            messageRepository.removeReaction(packet.messageId, packet.userId)
+            messageRepository.removeReaction(packet.messageId, packet.senderId)
         } else {
-            messageRepository.addReaction(packet.messageId, packet.userId, packet.emoji)
+            messageRepository.addReaction(packet.messageId, packet.senderId, packet.emoji)
         }
     }
     
@@ -271,21 +275,16 @@ class MessageRouter @Inject constructor(
         }
     }
     
-    suspend fun sendReaction(messageId: String, receiverId: String, emoji: String) {
+    suspend fun sendReaction(messageId: String, receiverId: String, userId: String, emoji: String) {
         // Save locally
-        messageRepository.addReaction(messageId, "", emoji) // Current user ID
+        messageRepository.addReaction(messageId, userId, emoji)
         
-        // Send to peer
-        val packet = P2PPacket.Reaction(
-            messageId = messageId,
-            userId = "",
-            emoji = emoji
-        )
-        // Send via P2P
+        // Note: Need to implement sending reaction packet
     }
     
     suspend fun markAsRead(conversationId: String, receiverId: String) {
-        val unreadMessages = messageRepository.getUnreadMessages(conversationId)
+        val currentUserId = p2pManager.getMyUserId()
+        val unreadMessages = messageRepository.getUnreadMessages(conversationId, currentUserId)
         val messageIds = unreadMessages.map { it.id }
         
         if (messageIds.isNotEmpty()) {
@@ -300,7 +299,7 @@ class MessageRouter @Inject constructor(
 }
 
 data class TypingState(
-    val userId: String,
+    val oderId: String,
     val conversationId: String,
     val isTyping: Boolean,
     val timestamp: Long
