@@ -275,5 +275,161 @@ fun SettingsScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
+     // ui/screens/settings/SettingsScreen.kt (continued)
                     text = "Ping Messenger",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextTertiary
+                )
+                Text(
+                    text = "Version ${uiState.appVersion}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = "Privacy Policy",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = PrimaryPurple,
+                        modifier = Modifier.clickable { /* Open privacy policy */ }
+                    )
+                    Text(
+                        text = "Terms of Service",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = PrimaryPurple,
+                        modifier = Modifier.clickable { /* Open terms */ }
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+    
+    // Logout confirmation dialog
+    if (uiState.showLogoutDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.hideLogoutDialog() },
+            title = {
+                Text(
+                    text = "Log Out",
+                    color = TextPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to log out? Your messages will remain on this device.",
+                    color = TextSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { viewModel.logout() },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = ErrorRed
+                    )
+                ) {
+                    Text("Log Out")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { viewModel.hideLogoutDialog() }
+                ) {
+                    Text("Cancel")
+                }
+            },
+            containerColor = DarkSurface
+        )
+    }
+}
+
+@Composable
+private fun SettingsSection(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
+            color = PrimaryPurple,
+            modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
+        )
+        
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = DarkSurface
+            ),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column {
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsItem(
+    icon: ImageVector,
+    title: String,
+    subtitle: String? = null,
+    onClick: (() -> Unit)? = null,
+    trailing: @Composable (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = PrimaryPurple,
+            modifier = Modifier.size(24.dp)
+        )
+        
+        Spacer(modifier = Modifier.width(16.dp))
+        
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = TextPrimary
+            )
+            subtitle?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+        }
+        
+        if (trailing != null) {
+            trailing()
+        } else if (onClick != null) {
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = TextTertiary
+            )
+        }
+    }
+}
                 
