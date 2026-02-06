@@ -1,6 +1,8 @@
 // ui/screens/settings/SettingsScreen.kt
 package com.ping.app.ui.screens.settings
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -37,6 +40,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
     
     Scaffold(
         topBar = {
@@ -117,10 +121,17 @@ fun SettingsScreen(
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "@${uiState.currentUser?.username ?: ""}",
+                            text = "@${uiState.currentUser?.username ?: "username"}",
                             style = MaterialTheme.typography.bodyMedium,
                             color = TextSecondary
                         )
+                        uiState.currentUser?.status?.let { status ->
+                            Text(
+                                text = status,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextTertiary
+                            )
+                        }
                     }
                     
                     Icon(
@@ -133,7 +144,7 @@ fun SettingsScreen(
             
             Spacer(modifier = Modifier.height(8.dp))
             
-            // Settings sections
+            // Account settings
             SettingsSection(title = "Account") {
                 SettingsItem(
                     icon = Icons.Outlined.Key,
@@ -142,12 +153,16 @@ fun SettingsScreen(
                     onClick = onNavigateToPrivacy
                 )
                 
+                HorizontalDivider(color = DividerColor)
+                
                 SettingsItem(
                     icon = Icons.Outlined.Notifications,
                     title = "Notifications",
                     subtitle = "Message, group & call tones",
                     onClick = onNavigateToNotifications
                 )
+                
+                HorizontalDivider(color = DividerColor)
                 
                 SettingsItem(
                     icon = Icons.Outlined.Storage,
@@ -157,68 +172,73 @@ fun SettingsScreen(
                 )
             }
             
+            // Appearance settings
             SettingsSection(title = "Appearance") {
-                SettingsItem(
+                SettingsItemWithToggle(
                     icon = Icons.Outlined.DarkMode,
-                    title = "Theme",
-                    subtitle = "Dark mode",
-                    trailing = {
-                        Switch(
-                            checked = uiState.isDarkMode,
-                            onCheckedChange = { viewModel.toggleDarkMode() },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = PrimaryPurple,
-                                checkedTrackColor = PrimaryPurple.copy(alpha = 0.5f)
-                            )
-                        )
-                    }
+                    title = "Dark Mode",
+                    subtitle = "Use dark theme",
+                    checked = uiState.isDarkMode,
+                    onCheckedChange = { viewModel.toggleDarkMode() }
                 )
+                
+                HorizontalDivider(color = DividerColor)
                 
                 SettingsItem(
                     icon = Icons.Outlined.Wallpaper,
                     title = "Chat Wallpaper",
                     subtitle = "Change chat background",
-                    onClick = { /* Change wallpaper */ }
+                    onClick = { /* Open wallpaper picker */ }
                 )
+                
+                HorizontalDivider(color = DividerColor)
                 
                 SettingsItem(
                     icon = Icons.Outlined.TextFields,
                     title = "Font Size",
                     subtitle = uiState.fontSize,
-                    onClick = { /* Change font size */ }
+                    onClick = { /* Open font size dialog */ }
                 )
             }
             
+            // Connections settings
             SettingsSection(title = "Connections") {
-                SettingsItem(
+                SettingsItemWithStatus(
                     icon = Icons.Outlined.Wifi,
-                    title = "Network",
+                    title = "Network Status",
                     subtitle = if (uiState.isConnected) "Connected" else "Disconnected",
-                    trailing = {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(if (uiState.isConnected) OnlineGreen else OfflineGray)
-                        )
-                    }
+                    statusColor = if (uiState.isConnected) OnlineGreen else OfflineGray
                 )
+                
+                HorizontalDivider(color = DividerColor)
                 
                 SettingsItem(
                     icon = Icons.Outlined.QrCodeScanner,
                     title = "Scan QR Code",
-                    subtitle = "Connect with friends",
+                    subtitle = "Connect with friends nearby",
                     onClick = { /* Open QR scanner */ }
                 )
+                
+                HorizontalDivider(color = DividerColor)
+                
+                SettingsItem(
+                    icon = Icons.Outlined.QrCode2,
+                    title = "My QR Code",
+                    subtitle = "Share your profile",
+                    onClick = { /* Show QR code */ }
+                )
+                
+                HorizontalDivider(color = DividerColor)
                 
                 SettingsItem(
                     icon = Icons.Outlined.Devices,
                     title = "Linked Devices",
                     subtitle = "Manage your devices",
-                    onClick = { /* Linked devices */ }
+                    onClick = { /* Open linked devices */ }
                 )
             }
             
+            // Support settings
             SettingsSection(title = "Support") {
                 SettingsItem(
                     icon = Icons.Outlined.Help,
@@ -227,6 +247,8 @@ fun SettingsScreen(
                     onClick = onNavigateToHelp
                 )
                 
+                HorizontalDivider(color = DividerColor)
+                
                 SettingsItem(
                     icon = Icons.Outlined.Info,
                     title = "About",
@@ -234,11 +256,13 @@ fun SettingsScreen(
                     onClick = onNavigateToAbout
                 )
                 
+                HorizontalDivider(color = DividerColor)
+                
                 SettingsItem(
                     icon = Icons.Outlined.Share,
                     title = "Invite Friends",
                     subtitle = "Share Ping with friends",
-                    onClick = { viewModel.shareApp() }
+                    onClick = { viewModel.shareApp(context) }
                 )
             }
             
@@ -249,9 +273,10 @@ fun SettingsScreen(
                 onClick = { viewModel.showLogoutDialog() },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 16.dp)
+                    .height(52.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = ErrorRed.copy(alpha = 0.1f),
+                    containerColor = ErrorRed.copy(alpha = 0.15f),
                     contentColor = ErrorRed
                 ),
                 shape = RoundedCornerShape(12.dp)
@@ -263,19 +288,19 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "Log Out",
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
             
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(24.dp))
             
-            // App info
+            // App info with working links
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-     // ui/screens/settings/SettingsScreen.kt (continued)
                     text = "Ping Messenger",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextTertiary
@@ -293,15 +318,34 @@ fun SettingsScreen(
                         text = "Privacy Policy",
                         style = MaterialTheme.typography.labelMedium,
                         color = PrimaryPurple,
-                        modifier = Modifier.clickable { /* Open privacy policy */ }
+                        modifier = Modifier.clickable {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://ping.app/privacy"))
+                            context.startActivity(intent)
+                        }
+                    )
+                    Text(
+                        text = "•",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TextTertiary
                     )
                     Text(
                         text = "Terms of Service",
                         style = MaterialTheme.typography.labelMedium,
                         color = PrimaryPurple,
-                        modifier = Modifier.clickable { /* Open terms */ }
+                        modifier = Modifier.clickable {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://ping.app/terms"))
+                            context.startActivity(intent)
+                        }
                     )
                 }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Text(
+                    text = "Made with ❤️ for privacy",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextTertiary
+                )
             }
             
             Spacer(modifier = Modifier.height(32.dp))
@@ -315,12 +359,13 @@ fun SettingsScreen(
             title = {
                 Text(
                     text = "Log Out",
-                    color = TextPrimary
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold
                 )
             },
             text = {
                 Text(
-                    text = "Are you sure you want to log out? Your messages will remain on this device.",
+                    text = "Are you sure you want to log out? Your messages will remain safely stored on this device.",
                     color = TextSecondary
                 )
             },
@@ -331,7 +376,7 @@ fun SettingsScreen(
                         contentColor = ErrorRed
                     )
                 ) {
-                    Text("Log Out")
+                    Text("Log Out", fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
@@ -341,8 +386,16 @@ fun SettingsScreen(
                     Text("Cancel")
                 }
             },
-            containerColor = DarkSurface
+            containerColor = DarkSurface,
+            shape = RoundedCornerShape(16.dp)
         )
+    }
+    
+    // Handle logout navigation
+    LaunchedEffect(uiState.isLoggedOut) {
+        if (uiState.isLoggedOut) {
+            // Navigate to auth screen - handled by parent
+        }
     }
 }
 
@@ -360,6 +413,7 @@ private fun SettingsSection(
             text = title,
             style = MaterialTheme.typography.labelLarge,
             color = PrimaryPurple,
+            fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
         )
         
@@ -381,19 +435,12 @@ private fun SettingsItem(
     icon: ImageVector,
     title: String,
     subtitle: String? = null,
-    onClick: (() -> Unit)? = null,
-    trailing: @Composable (() -> Unit)? = null
+    onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(
-                if (onClick != null) {
-                    Modifier.clickable(onClick = onClick)
-                } else {
-                    Modifier
-                }
-            )
+            .clickable(onClick = onClick)
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -421,15 +468,106 @@ private fun SettingsItem(
             }
         }
         
-        if (trailing != null) {
-            trailing()
-        } else if (onClick != null) {
-            Icon(
-                imageVector = Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = TextTertiary
-            )
-        }
+        Icon(
+            imageVector = Icons.Default.ChevronRight,
+            contentDescription = null,
+            tint = TextTertiary
+        )
     }
 }
-                
+
+@Composable
+private fun SettingsItemWithToggle(
+    icon: ImageVector,
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = PrimaryPurple,
+            modifier = Modifier.size(24.dp)
+        )
+        
+        Spacer(modifier = Modifier.width(16.dp))
+        
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = TextPrimary
+            )
+            subtitle?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+        }
+        
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = PrimaryPurple,
+                checkedTrackColor = PrimaryPurple.copy(alpha = 0.5f),
+                uncheckedThumbColor = TextTertiary,
+                uncheckedTrackColor = DarkSurfaceVariant
+            )
+        )
+    }
+}
+
+@Composable
+private fun SettingsItemWithStatus(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    statusColor: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = PrimaryPurple,
+            modifier = Modifier.size(24.dp)
+        )
+        
+        Spacer(modifier = Modifier.width(16.dp))
+        
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = TextPrimary
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary
+            )
+        }
+        
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(statusColor)
+        )
+    }
+}
