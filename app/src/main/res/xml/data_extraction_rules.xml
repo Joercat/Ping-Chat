@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="ping_secure_prefs.xml"/>
+        <exclude domain="database" path="ping_encrypted.db"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="ping_secure_prefs.xml"/>
+        <exclude domain="database" path="ping_encrypted.db"/>
+    </device-transfer>
+</data-extraction-rules>
