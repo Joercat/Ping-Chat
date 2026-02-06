@@ -2,10 +2,13 @@
 package com.ping.app.ui.screens.conversations
 
 import androidx.compose.animation.*
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,10 +20,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import coil.compose.AsyncImage
 import com.ping.app.data.models.*
 import com.ping.app.ui.components.OnlineIndicator
 import com.ping.app.ui.components.TypingIndicatorSmall
@@ -28,7 +33,7 @@ import com.ping.app.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ConversationsScreen(
     onNavigateToChat: (String) -> Unit,
@@ -64,7 +69,7 @@ fun ConversationsScreen(
             FloatingActionButton(
                 onClick = onNavigateToNewChat,
                 containerColor = PrimaryPurple,
-                contentColor = androidx.compose.ui.graphics.Color.White
+                contentColor = Color.White
             ) {
                 Icon(
                     imageVector = Icons.Default.Edit,
@@ -107,6 +112,7 @@ fun ConversationsScreen(
                     ConversationItem(
                         conversation = conversation,
                         typingUserId = viewModel.getTypingUser(conversation.id),
+                        currentUserId = viewModel.getCurrentUserId(),
                         onClick = { onNavigateToChat(conversation.id) },
                         onLongClick = { /* Show options */ }
                     )
@@ -128,6 +134,7 @@ fun ConversationsScreen(
                     ConversationItem(
                         conversation = conversation,
                         typingUserId = viewModel.getTypingUser(conversation.id),
+                        currentUserId = viewModel.getCurrentUserId(),
                         onClick = { onNavigateToChat(conversation.id) },
                         onLongClick = { /* Show options */ }
                     )
@@ -223,10 +230,13 @@ private fun SearchTopBar(
                 },
                 modifier = Modifier.fillMaxWidth(),
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
-                    unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
-                    focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
-                    unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    cursorColor = PrimaryPurple,
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary
                 ),
                 singleLine = true
             )
@@ -261,11 +271,11 @@ private fun OnlineUsersRow(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
         )
         
-        androidx.compose.foundation.lazy.LazyRow(
+        LazyRow(
             contentPadding = PaddingValues(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            items(users) { user ->
+            items(users, key = { it.id }) { user ->
                 OnlineUserItem(
                     user = user,
                     onClick = { onUserClick(user.id) }
@@ -295,7 +305,7 @@ private fun OnlineUserItem(
                 contentAlignment = Alignment.Center
             ) {
                 user.avatarUrl?.let { url ->
-                    coil.compose.AsyncImage(
+                    AsyncImage(
                         model = url,
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize()
@@ -340,6 +350,7 @@ private fun SectionHeader(title: String) {
 private fun ConversationItem(
     conversation: Conversation,
     typingUserId: String?,
+    currentUserId: String,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -371,7 +382,7 @@ private fun ConversationItem(
                     )
                 } else {
                     conversation.groupAvatar?.let { url ->
-                        coil.compose.AsyncImage(
+                        AsyncImage(
                             model = url,
                             contentDescription = null,
                             modifier = Modifier.fillMaxSize()
@@ -435,7 +446,8 @@ private fun ConversationItem(
                 // Last message or typing indicator
                 if (typingUserId != null) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
                     ) {
                         TypingIndicatorSmall()
                         Spacer(modifier = Modifier.width(4.dp))
@@ -452,7 +464,7 @@ private fun ConversationItem(
                     ) {
                         conversation.lastMessage?.let { message ->
                             // Status icon for sent messages
-                            if (message.senderId == "currentUserId") { // Replace with actual check
+                            if (message.senderId == currentUserId) {
                                 MessageStatusIcon(
                                     status = message.status,
                                     modifier = Modifier.size(16.dp)
@@ -471,41 +483,45 @@ private fun ConversationItem(
                     }
                 }
                 
-                // Unread badge
-                if (conversation.unreadCount > 0) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(PrimaryPurple)
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            text = if (conversation.unreadCount > 99) "99+" else conversation.unreadCount.toString(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = androidx.compose.ui.graphics.Color.White
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Muted icon
+                    if (conversation.isMuted) {
+                        Icon(
+                            imageVector = Icons.Default.VolumeOff,
+                            contentDescription = "Muted",
+                            tint = TextTertiary,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
-                }
-                
-                // Muted icon
-                if (conversation.isMuted) {
-                    Icon(
-                        imageVector = Icons.Default.VolumeOff,
-                        contentDescription = "Muted",
-                        tint = TextTertiary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                
-                // Pinned icon
-                if (conversation.isPinned) {
-                    Icon(
-                        imageVector = Icons.Default.PushPin,
-                        contentDescription = "Pinned",
-                        tint = PrimaryPurple,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    
+                    // Pinned icon
+                    if (conversation.isPinned) {
+                        Icon(
+                            imageVector = Icons.Default.PushPin,
+                            contentDescription = "Pinned",
+                            tint = PrimaryPurple,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    
+                    // Unread badge
+                    if (conversation.unreadCount > 0) {
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(PrimaryPurple)
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = if (conversation.unreadCount > 99) "99+" else conversation.unreadCount.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White
+                            )
+                        }
+                    }
                 }
             }
         }
