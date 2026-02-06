@@ -25,14 +25,18 @@ class SyncManager @Inject constructor(
     private val pendingSync = mutableMapOf<String, MutableList<Message>>()
     
     fun queueForSync(userId: String, message: Message) {
-        pendingSync.getOrPut(userId) { mutableListOf() }.add(message)
+        synchronized(pendingSync) {
+            pendingSync.getOrPut(userId) { mutableListOf() }.add(message)
+        }
     }
     
     suspend fun syncWithPeer(userId: String) {
         _syncStatus.value = SyncStatus.Syncing(userId)
         
         try {
-            val pendingMessages = pendingSync[userId] ?: emptyList()
+            val pendingMessages = synchronized(pendingSync) {
+                pendingSync[userId]?.toList() ?: emptyList()
+            }
             
             for (message in pendingMessages) {
                 val sent = p2pManager.sendMessage(userId, message)
@@ -41,7 +45,9 @@ class SyncManager @Inject constructor(
                 }
             }
             
-            pendingSync.remove(userId)
+            synchronized(pendingSync) {
+                pendingSync.remove(userId)
+            }
             _syncStatus.value = SyncStatus.Completed(userId)
             
         } catch (e: Exception) {
@@ -50,20 +56,26 @@ class SyncManager @Inject constructor(
     }
     
     suspend fun retryFailedMessages() {
-        val failedMessages = messageRepository.getFailedMessages()
-        
-        for (message in failedMessages) {
-            val sent = p2pManager.sendMessage(message.receiverId, message)
-            if (sent) {
-                messageRepository.updateMessageStatus(message.id, MessageStatus.SENT)
+        try {
+            val failedMessages = messageRepository.getFailedMessages()
+            
+            for (message in failedMessages) {
+                if (p2pManager.isConnectedTo(message.receiverId)) {
+                    val sent = p2pManager.sendMessage(message.receiverId, message)
+                    if (sent) {
+                        messageRepository.updateMessageStatus(message.id, MessageStatus.SENT)
+                    }
+                }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
     
     fun startAutoSync() {
         scope.launch {
             while (isActive) {
-                delay(15000) // Every 15 seconds
+                delay(30000) // Every 30 seconds
                 retryFailedMessages()
             }
         }
