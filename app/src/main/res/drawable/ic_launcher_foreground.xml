@@ -1,15 +1,26 @@
-<!-- res/drawable/ic_launcher_foreground.xml -->
+<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <group android:scaleX="0.5"
-        android:scaleY="0.5"
-        android:translateX="27"
-        android:translateY="27">
-        <path
-            android:fillColor="#6C63FF"
-            android:pathData="M54,10C30.8,10 12,28.8 12,52C12,75.2 30.8,94 54,94C77.2,94 96,75.2 96,52C96,28.8 77.2,10 54,10ZM54,22C60.6,22 66,27.4 66,34C66,40.6 60.6,46 54,46C47.4,46 42,40.6 42,34C42,27.4 47.4,22 54,22ZM54,84C42,84 31.6,78 25,69C25.1,60.5 42,55.8 54,55.8C65.9,55.8 82.9,60.5 83,69C76.4,78 66,84 54,84Z"/>
-    </group>
+    
+    <!-- Background circle (optional, for better visibility) -->
+    <path
+        android:fillColor="#6C63FF"
+        android:pathData="M54,54m-40,0a40,40 0,1 1,80 0a40,40 0,1 1,-80 0"/>
+    
+    <!-- Letter P -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,32h16c8.84,0 16,7.16 16,16s-7.16,16 -16,16h-8v12h-8V32zM46,56h8c4.42,0 8,-3.58 8,-8s-3.58,-8 -8,-8h-8v16z"/>
+    
+    <!-- Chat bubble indicator dots -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M62,68m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M72,68m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0"/>
+    
 </vector>
