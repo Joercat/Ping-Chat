@@ -63,6 +63,10 @@ class ConversationsViewModel @Inject constructor(
         }
     }
     
+    fun getCurrentUserId(): String {
+        return connectionManager.getMyUserId()
+    }
+    
     fun getTypingUser(conversationId: String): String? {
         return typingUsers.value[conversationId]?.userId
     }
@@ -102,16 +106,12 @@ class ConversationsViewModel @Inject constructor(
     
     fun deleteConversation(conversationId: String) {
         viewModelScope.launch {
-            val conversation = conversationRepository.getConversationById(conversationId)
-            conversation?.let {
-                // Delete conversation and messages
-            }
+            // Implement delete
         }
     }
     
     fun searchConversations(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
-        // Implement search filtering
     }
     
     fun clearError() {
