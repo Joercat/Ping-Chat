@@ -106,24 +106,20 @@ class MessageRouter @Inject constructor(
         val sessionKey = keyExchange.getSessionKey(senderId) ?: return
         
         try {
-            // Verify checksum
             val encryptedData = EncryptedData.fromByteArray(packet.encryptedData)
             val decryptedData = cryptoManager.decryptFile(encryptedData, sessionKey)
             val calculatedChecksum = cryptoManager.calculateChecksum(decryptedData)
             
             if (calculatedChecksum != packet.checksum) {
-                // Checksum mismatch, file corrupted
                 return
             }
             
-            // Save file to local storage
             val localPath = fileUtils.saveReceivedFile(
                 fileName = packet.fileName,
                 mimeType = packet.mimeType,
                 data = decryptedData
             )
             
-            // Update attachment in database
             val attachment = Attachment(
                 id = packet.attachmentId,
                 messageId = packet.messageId,
@@ -161,7 +157,6 @@ class MessageRouter @Inject constructor(
             _typingUsers.value - packet.conversationId
         }
         
-        // Auto-remove typing indicator after 5 seconds
         if (packet.isTyping) {
             scope.launch {
                 delay(5000)
@@ -215,11 +210,9 @@ class MessageRouter @Inject constructor(
     
     suspend fun sendMessage(message: Message): Result<Message> {
         return try {
-            // Save locally first
             val savedMessage = message.copy(status = MessageStatus.SENDING)
             messageRepository.insertMessage(savedMessage)
             
-            // Send via P2P
             val sent = p2pManager.sendMessage(message.receiverId, message)
             
             if (sent) {
@@ -242,15 +235,12 @@ class MessageRouter @Inject constructor(
         fileData: ByteArray
     ): Result<Message> {
         return try {
-            // Save message and attachment locally
             messageRepository.insertMessage(message)
             messageRepository.insertAttachment(attachment)
             
-            // Send message first
             val messageSent = p2pManager.sendMessage(message.receiverId, message)
             
             if (messageSent) {
-                // Then send file
                 val fileSent = p2pManager.sendFile(message.receiverId, attachment, fileData)
                 
                 if (fileSent) {
@@ -275,11 +265,50 @@ class MessageRouter @Inject constructor(
         }
     }
     
+    /**
+     * FIXED: Complete implementation for sending reactions
+     */
     suspend fun sendReaction(messageId: String, receiverId: String, userId: String, emoji: String) {
         // Save locally
         messageRepository.addReaction(messageId, userId, emoji)
         
-        // Note: Need to implement sending reaction packet
+        // Send to peer
+        scope.launch {
+            try {
+                val packet = P2PPacket.Reaction(
+                    messageId = messageId,
+                    senderId = userId,
+                    emoji = emoji,
+                    isRemoved = false
+                )
+                p2pManager.sendReactionPacket(receiverId, packet)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+    
+    /**
+     * Remove a reaction
+     */
+    suspend fun removeReaction(messageId: String, receiverId: String, userId: String) {
+        // Remove locally
+        messageRepository.removeReaction(messageId, userId)
+        
+        // Send removal to peer
+        scope.launch {
+            try {
+                val packet = P2PPacket.Reaction(
+                    messageId = messageId,
+                    senderId = userId,
+                    emoji = "",
+                    isRemoved = true
+                )
+                p2pManager.sendReactionPacket(receiverId, packet)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
     
     suspend fun markAsRead(conversationId: String, receiverId: String) {
@@ -293,13 +322,64 @@ class MessageRouter @Inject constructor(
         }
     }
     
+    /**
+     * Send message edit to peer
+     */
+    suspend fun sendMessageEdit(messageId: String, receiverId: String, newContent: String) {
+        val timestamp = System.currentTimeMillis()
+        
+        // Update locally
+        messageRepository.editMessage(messageId, newContent, timestamp)
+        
+        // Send to peer
+        scope.launch {
+            try {
+                val packet = P2PPacket.MessageEdit(
+                    messageId = messageId,
+                    newContent = newContent,
+                    timestamp = timestamp
+                )
+                p2pManager.sendEditPacket(receiverId, packet)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+    
+    /**
+     * Send message deletion to peer
+     */
+    suspend fun sendMessageDelete(messageId: String, receiverId: String, forEveryone: Boolean) {
+        // Delete locally
+        if (forEveryone) {
+            messageRepository.deleteMessageForEveryone(messageId)
+        } else {
+            messageRepository.deleteMessage(messageId)
+        }
+        
+        // Send to peer if deleting for everyone
+        if (forEveryone) {
+            scope.launch {
+                try {
+                    val packet = P2PPacket.MessageDelete(
+                        messageId = messageId,
+                        forEveryone = true
+                    )
+                    p2pManager.sendDeletePacket(receiverId, packet)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+    
     fun cleanup() {
         scope.cancel()
     }
 }
 
 data class TypingState(
-    val oderId: String,
+    val userId: String,
     val conversationId: String,
     val isTyping: Boolean,
     val timestamp: Long
