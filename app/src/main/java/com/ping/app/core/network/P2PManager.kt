@@ -33,7 +33,11 @@ class P2PManager @Inject constructor(
 ) {
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val json = Json { 
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+        isLenient = true
+    }
     
     private var serverChannel: Channel? = null
     private val clientChannels = mutableMapOf<String, Channel>()
@@ -52,10 +56,22 @@ class P2PManager @Inject constructor(
     companion object {
         private const val DEFAULT_PORT = 9876
         private const val MAX_FRAME_LENGTH = 16 * 1024 * 1024 // 16MB for files
+        private const val CONNECTION_TIMEOUT_MS = 10000
     }
     
+    /**
+     * Gets the current user's ID
+     */
     fun getMyUserId(): String = connectionManager.getMyUserId()
     
+    /**
+     * Gets the server port
+     */
+    fun getServerPort(): Int = myPort
+    
+    /**
+     * Starts the P2P server
+     */
     fun startServer(port: Int = DEFAULT_PORT): Int {
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
@@ -71,6 +87,7 @@ class P2PManager @Inject constructor(
             })
             .option(ChannelOption.SO_BACKLOG, 128)
             .childOption(ChannelOption.SO_KEEPALIVE, true)
+            .childOption(ChannelOption.TCP_NODELAY, true)
         
         return try {
             val channelFuture = bootstrap.bind(port).sync()
@@ -79,8 +96,8 @@ class P2PManager @Inject constructor(
             myPort
         } catch (e: Exception) {
             // Try alternate port if default is in use
-            val altPort = port + 1
             try {
+                val altPort = port + 1
                 val channelFuture = bootstrap.bind(altPort).sync()
                 serverChannel = channelFuture.channel()
                 myPort = altPort
@@ -92,9 +109,17 @@ class P2PManager @Inject constructor(
         }
     }
     
+    /**
+     * Connects to a peer
+     */
     suspend fun connectToPeer(userId: String, address: String, port: Int): Boolean {
         return withContext(Dispatchers.IO) {
             try {
+                // Check if already connected
+                if (isConnectedTo(userId)) {
+                    return@withContext true
+                }
+                
                 updateConnectionStatus(userId, ConnectionStatus.CONNECTING)
                 
                 val bootstrap = Bootstrap()
@@ -110,7 +135,8 @@ class P2PManager @Inject constructor(
                         }
                     })
                     .option(ChannelOption.SO_KEEPALIVE, true)
-                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10000)
+                    .option(ChannelOption.TCP_NODELAY, true)
+                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECTION_TIMEOUT_MS)
                 
                 val future = bootstrap.connect(address, port).sync()
                 if (future.isSuccess) {
@@ -132,18 +158,31 @@ class P2PManager @Inject constructor(
         }
     }
     
+    /**
+     * Sends handshake to establish encryption
+     */
     private suspend fun sendHandshake(userId: String) {
         val handshake = HandshakePacket(
             publicKey = keyExchange.getMyPublicKeyString(),
-            oderId = connectionManager.getMyUserId()
+            senderId = connectionManager.getMyUserId()
         )
         sendPacket(userId, P2PPacket.Handshake(handshake))
     }
     
+    /**
+     * Checks if connected to a specific peer
+     */
+    fun isConnectedTo(userId: String): Boolean {
+        return clientChannels[userId]?.isActive == true
+    }
+    
+    /**
+     * Sends an encrypted message to a peer
+     */
     suspend fun sendMessage(userId: String, message: Message): Boolean {
         val sessionKey = keyExchange.getSessionKey(userId) ?: return false
         
-        try {
+        return try {
             val messageJson = json.encodeToString(message.toTransport())
             val encrypted = cryptoManager.encryptMessage(messageJson.toByteArray(), sessionKey)
             
@@ -152,13 +191,16 @@ class P2PManager @Inject constructor(
                 encryptedData = encrypted.toByteArray()
             )
             
-            return sendPacket(userId, packet)
+            sendPacket(userId, packet)
         } catch (e: Exception) {
             e.printStackTrace()
-            return false
+            false
         }
     }
     
+    /**
+     * Sends a file to a peer
+     */
     suspend fun sendFile(userId: String, attachment: Attachment, fileData: ByteArray): Boolean {
         val sessionKey = keyExchange.getSessionKey(userId) ?: return false
         
@@ -167,7 +209,7 @@ class P2PManager @Inject constructor(
             return false
         }
         
-        try {
+        return try {
             val encrypted = cryptoManager.encryptFile(fileData, sessionKey)
             val checksum = cryptoManager.calculateChecksum(fileData)
             
@@ -181,13 +223,16 @@ class P2PManager @Inject constructor(
                 checksum = checksum
             )
             
-            return sendPacket(userId, packet)
+            sendPacket(userId, packet)
         } catch (e: Exception) {
             e.printStackTrace()
-            return false
+            false
         }
     }
     
+    /**
+     * Sends typing indicator to a peer
+     */
     suspend fun sendTypingIndicator(userId: String, conversationId: String, isTyping: Boolean): Boolean {
         val packet = P2PPacket.TypingIndicator(
             userId = connectionManager.getMyUserId(),
@@ -197,11 +242,17 @@ class P2PManager @Inject constructor(
         return sendPacket(userId, packet)
     }
     
+    /**
+     * Sends presence update to a peer
+     */
     suspend fun sendPresenceUpdate(userId: String, presence: PresenceInfo): Boolean {
         val packet = P2PPacket.PresenceUpdate(presence)
         return sendPacket(userId, packet)
     }
     
+    /**
+     * Sends message status update to a peer
+     */
     suspend fun sendMessageStatus(userId: String, messageId: String, status: MessageStatus): Boolean {
         val packet = P2PPacket.MessageStatusUpdate(
             messageId = messageId,
@@ -211,7 +262,12 @@ class P2PManager @Inject constructor(
         return sendPacket(userId, packet)
     }
     
+    /**
+     * Sends read receipt to a peer
+     */
     suspend fun sendReadReceipt(userId: String, messageIds: List<String>): Boolean {
+        if (messageIds.isEmpty()) return true
+        
         val packet = P2PPacket.ReadReceipt(
             messageIds = messageIds,
             timestamp = System.currentTimeMillis()
@@ -219,18 +275,43 @@ class P2PManager @Inject constructor(
         return sendPacket(userId, packet)
     }
     
+    /**
+     * Sends reaction packet to a peer
+     */
+    suspend fun sendReactionPacket(userId: String, packet: P2PPacket.Reaction): Boolean {
+        return sendPacket(userId, packet)
+    }
+    
+    /**
+     * Sends message edit packet to a peer
+     */
+    suspend fun sendEditPacket(userId: String, packet: P2PPacket.MessageEdit): Boolean {
+        return sendPacket(userId, packet)
+    }
+    
+    /**
+     * Sends message delete packet to a peer
+     */
+    suspend fun sendDeletePacket(userId: String, packet: P2PPacket.MessageDelete): Boolean {
+        return sendPacket(userId, packet)
+    }
+    
+    /**
+     * Generic method to send any packet to a peer
+     */
     private suspend fun sendPacket(userId: String, packet: P2PPacket): Boolean {
         return withContext(Dispatchers.IO) {
-            val channel = clientChannels[userId] ?: return@withContext false
+            val channel = clientChannels[userId]
             
-            if (!channel.isActive) {
+            if (channel == null || !channel.isActive) {
                 updateConnectionStatus(userId, ConnectionStatus.DISCONNECTED)
                 return@withContext false
             }
             
             try {
-                val packetJson = json.encodeToString(P2PPacketWrapper(packet))
-                val buffer = Unpooled.copiedBuffer(packetJson.toByteArray())
+                val wrapper = P2PPacketWrapper(packet)
+                val packetJson = json.encodeToString(wrapper)
+                val buffer = Unpooled.copiedBuffer(packetJson.toByteArray(Charsets.UTF_8))
                 channel.writeAndFlush(buffer).sync()
                 true
             } catch (e: Exception) {
@@ -240,37 +321,73 @@ class P2PManager @Inject constructor(
         }
     }
     
+    /**
+     * Broadcasts presence to all connected peers
+     */
     fun broadcastPresence(presence: PresenceInfo) {
         scope.launch {
-            clientChannels.keys.forEach { userId ->
-                sendPresenceUpdate(userId, presence)
+            clientChannels.keys.toList().forEach { userId ->
+                try {
+                    sendPresenceUpdate(userId, presence)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
     
+    /**
+     * Updates connection status for a peer
+     */
     private fun updateConnectionStatus(userId: String, status: ConnectionStatus) {
         _connectionStatus.value = _connectionStatus.value + (userId to status)
     }
     
-    fun isConnectedTo(userId: String): Boolean {
-        return clientChannels[userId]?.isActive == true
+    /**
+     * Gets all connected peer IDs
+     */
+    fun getConnectedPeers(): List<String> {
+        return clientChannels.filter { it.value.isActive }.keys.toList()
     }
     
+    /**
+     * Disconnects from a specific peer
+     */
     fun disconnect(userId: String) {
-        clientChannels[userId]?.close()
-        clientChannels.remove(userId)
-        updateConnectionStatus(userId, ConnectionStatus.DISCONNECTED)
+        try {
+            clientChannels[userId]?.close()
+            clientChannels.remove(userId)
+            updateConnectionStatus(userId, ConnectionStatus.DISCONNECTED)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
     
+    /**
+     * Disconnects from all peers and shuts down
+     */
     fun shutdown() {
-        scope.cancel()
-        serverChannel?.close()
-        clientChannels.values.forEach { it.close() }
-        clientChannels.clear()
-        bossGroup.shutdownGracefully()
-        workerGroup.shutdownGracefully()
+        try {
+            scope.cancel()
+            serverChannel?.close()
+            clientChannels.values.forEach { 
+                try {
+                    it.close()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            clientChannels.clear()
+            bossGroup.shutdownGracefully()
+            workerGroup.shutdownGracefully()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
     
+    /**
+     * Server handler for incoming connections
+     */
     inner class P2PServerHandler : SimpleChannelInboundHandler<ByteBuf>() {
         private var connectedUserId: String? = null
         
@@ -280,7 +397,7 @@ class P2PManager @Inject constructor(
             
             scope.launch {
                 try {
-                    val packetJson = String(bytes)
+                    val packetJson = String(bytes, Charsets.UTF_8)
                     val wrapper = json.decodeFromString<P2PPacketWrapper>(packetJson)
                     handleIncomingPacket(ctx.channel(), wrapper.packet)
                 } catch (e: Exception) {
@@ -303,18 +420,24 @@ class P2PManager @Inject constructor(
                         senderId = connectionManager.getMyUserId()
                     )
                     val responsePacket = P2PPacket.Handshake(response)
-                    val responseJson = json.encodeToString(P2PPacketWrapper(responsePacket))
-                    channel.writeAndFlush(Unpooled.copiedBuffer(responseJson.toByteArray()))
+                    val wrapper = P2PPacketWrapper(responsePacket)
+                    val responseJson = json.encodeToString(wrapper)
+                    channel.writeAndFlush(Unpooled.copiedBuffer(responseJson.toByteArray(Charsets.UTF_8)))
                 }
                 else -> _incomingMessages.emit(packet)
             }
         }
         
+        override fun channelActive(ctx: ChannelHandlerContext) {
+            super.channelActive(ctx)
+        }
+        
         override fun channelInactive(ctx: ChannelHandlerContext) {
-            connectedUserId?.let {
-                updateConnectionStatus(it, ConnectionStatus.DISCONNECTED)
-                clientChannels.remove(it)
+            connectedUserId?.let { userId ->
+                updateConnectionStatus(userId, ConnectionStatus.DISCONNECTED)
+                clientChannels.remove(userId)
             }
+            super.channelInactive(ctx)
         }
         
         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
@@ -323,6 +446,9 @@ class P2PManager @Inject constructor(
         }
     }
     
+    /**
+     * Client handler for outgoing connections
+     */
     inner class P2PClientHandler(private val peerId: String) : SimpleChannelInboundHandler<ByteBuf>() {
         
         override fun channelRead0(ctx: ChannelHandlerContext, msg: ByteBuf) {
@@ -331,12 +457,13 @@ class P2PManager @Inject constructor(
             
             scope.launch {
                 try {
-                    val packetJson = String(bytes)
+                    val packetJson = String(bytes, Charsets.UTF_8)
                     val wrapper = json.decodeFromString<P2PPacketWrapper>(packetJson)
                     
                     when (val packet = wrapper.packet) {
                         is P2PPacket.Handshake -> {
                             keyExchange.establishSession(peerId, packet.data.publicKey)
+                            updateConnectionStatus(peerId, ConnectionStatus.CONNECTED)
                         }
                         else -> _incomingMessages.emit(packet)
                     }
@@ -346,17 +473,27 @@ class P2PManager @Inject constructor(
             }
         }
         
+        override fun channelActive(ctx: ChannelHandlerContext) {
+            super.channelActive(ctx)
+        }
+        
         override fun channelInactive(ctx: ChannelHandlerContext) {
             updateConnectionStatus(peerId, ConnectionStatus.DISCONNECTED)
+            clientChannels.remove(peerId)
+            super.channelInactive(ctx)
         }
         
         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
             cause.printStackTrace()
+            updateConnectionStatus(peerId, ConnectionStatus.FAILED)
             ctx.close()
         }
     }
 }
 
+/**
+ * Connection status enum
+ */
 enum class ConnectionStatus {
     CONNECTING,
     CONNECTED,
@@ -364,13 +501,20 @@ enum class ConnectionStatus {
     FAILED
 }
 
+/**
+ * Wrapper for serializing packets
+ */
 @Serializable
 data class P2PPacketWrapper(
     val packet: P2PPacket
 )
 
+/**
+ * Sealed class for all P2P packet types
+ */
 @Serializable
 sealed class P2PPacket {
+    
     @Serializable
     data class Handshake(val data: HandshakePacket) : P2PPacket()
     
@@ -415,7 +559,9 @@ sealed class P2PPacket {
     ) : P2PPacket()
     
     @Serializable
-    data class PresenceUpdate(val presence: PresenceInfo) : P2PPacket()
+    data class PresenceUpdate(
+        val presence: PresenceInfo
+    ) : P2PPacket()
     
     @Serializable
     data class MessageStatusUpdate(
@@ -433,7 +579,7 @@ sealed class P2PPacket {
     @Serializable
     data class Reaction(
         val messageId: String,
-        val oderId: String,
+        val senderId: String,
         val emoji: String,
         val isRemoved: Boolean = false
     ) : P2PPacket()
@@ -452,12 +598,18 @@ sealed class P2PPacket {
     ) : P2PPacket()
 }
 
+/**
+ * Handshake packet data
+ */
 @Serializable
 data class HandshakePacket(
     val publicKey: String,
     val senderId: String
 )
 
+/**
+ * Transport message for serialization
+ */
 @Serializable
 data class TransportMessage(
     val id: String,
@@ -470,6 +622,9 @@ data class TransportMessage(
     val createdAt: Long
 )
 
+/**
+ * Extension function to convert Message to TransportMessage
+ */
 fun Message.toTransport() = TransportMessage(
     id = id,
     conversationId = conversationId,
