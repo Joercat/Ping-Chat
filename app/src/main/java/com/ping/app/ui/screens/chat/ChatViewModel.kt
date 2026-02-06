@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.ping.app.core.network.ConnectionManager
 import com.ping.app.core.network.MessageRouter
 import com.ping.app.core.network.P2PManager
+import com.ping.app.core.network.TypingState
 import com.ping.app.data.models.*
 import com.ping.app.data.repository.ConversationRepository
 import com.ping.app.data.repository.MessageRepository
@@ -36,19 +37,19 @@ class ChatViewModel @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     
-    private val conversationId: String = savedStateHandle.get<String>("conversationId") ?: ""
+    private val conversationIdFromNav: String = savedStateHandle.get<String>("conversationId") ?: ""
+    private var currentConversationId: String = conversationIdFromNav
     
     val currentUserId: String = connectionManager.getMyUserId()
     
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
     
-    val messages: StateFlow<List<Message>> = messageRepository
-        .getMessages(conversationId)
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    private val _messages = MutableStateFlow<List<Message>>(emptyList())
+    val messages: StateFlow<List<Message>> = _messages.asStateFlow()
     
     val typingState: StateFlow<TypingState?> = messageRouter.typingUsers
-        .map { it[conversationId] }
+        .map { it[currentConversationId] }
         .stateIn(viewModelScope, SharingStarted.Lazily, null)
     
     val peerPresence: StateFlow<PresenceInfo?> = messageRouter.userPresence
@@ -60,11 +61,15 @@ class ChatViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Lazily, null)
     
     init {
-        loadConversation()
+        if (conversationIdFromNav.isNotEmpty()) {
+            loadConversation(conversationIdFromNav)
+        }
         observeConnectionStatus()
     }
     
-    private fun loadConversation() {
+    fun loadConversation(conversationId: String) {
+        currentConversationId = conversationId
+        
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             
@@ -82,15 +87,30 @@ class ChatViewModel @Inject constructor(
                         )
                     }
                     
+                    // Start observing messages
+                    observeMessages(conversationId)
+                    
                     // Connect to peer if not already connected
                     peerUser?.let { user ->
                         if (user.ipAddress != null && user.port != null) {
-                            p2pManager.connectToPeer(user.id, user.ipAddress!!, user.port!!)
+                            if (!p2pManager.isConnectedTo(user.id)) {
+                                p2pManager.connectToPeer(user.id, user.ipAddress!!, user.port!!)
+                            }
                         }
                     }
+                } ?: run {
+                    _uiState.update { it.copy(isLoading = false, error = "Conversation not found") }
                 }
             } catch (e: Exception) {
                 _uiState.update { it.copy(isLoading = false, error = e.message) }
+            }
+        }
+    }
+    
+    private fun observeMessages(conversationId: String) {
+        viewModelScope.launch {
+            messageRepository.getMessages(conversationId).collect { messageList ->
+                _messages.value = messageList
             }
         }
     }
@@ -114,7 +134,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             val message = Message(
                 id = UUID.randomUUID().toString(),
-                conversationId = conversationId,
+                conversationId = currentConversationId,
                 senderId = currentUserId,
                 receiverId = peerId,
                 content = content,
@@ -127,13 +147,15 @@ class ChatViewModel @Inject constructor(
             messageRouter.sendMessage(message)
             
             // Update conversation's last message
-            conversationRepository.updateConversation(
-                _uiState.value.conversation!!.copy(
-                    lastMessage = message,
-                    lastMessageTimestamp = message.createdAt,
-                    updatedAt = System.currentTimeMillis()
+            _uiState.value.conversation?.let { conv ->
+                conversationRepository.updateConversation(
+                    conv.copy(
+                        lastMessage = message,
+                        lastMessageTimestamp = message.createdAt,
+                        updatedAt = System.currentTimeMillis()
+                    )
                 )
-            )
+            }
         }
     }
     
@@ -174,7 +196,7 @@ class ChatViewModel @Inject constructor(
                 
                 val message = Message(
                     id = messageId,
-                    conversationId = conversationId,
+                    conversationId = currentConversationId,
                     senderId = currentUserId,
                     receiverId = peerId,
                     content = fileInfo.name,
@@ -199,15 +221,15 @@ class ChatViewModel @Inject constructor(
     
     fun updateTypingState(isTyping: Boolean) {
         val peerId = _uiState.value.peerUser?.id ?: return
-        messageRouter.sendTypingIndicator(conversationId, peerId, isTyping)
+        messageRouter.sendTypingIndicator(currentConversationId, peerId, isTyping)
     }
     
     fun markConversationAsRead() {
         val peerId = _uiState.value.peerUser?.id ?: return
         
         viewModelScope.launch {
-            messageRouter.markAsRead(conversationId, peerId)
-            conversationRepository.clearUnreadCount(conversationId)
+            messageRouter.markAsRead(currentConversationId, peerId)
+            conversationRepository.clearUnreadCount(currentConversationId)
         }
     }
     
@@ -217,7 +239,7 @@ class ChatViewModel @Inject constructor(
             
             // Send reaction to peer
             _uiState.value.peerUser?.id?.let { peerId ->
-                // messageRouter.sendReaction(messageId, peerId, emoji)
+                messageRouter.sendReaction(messageId, peerId, currentUserId, emoji)
             }
         }
     }
@@ -232,10 +254,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             if (forEveryone) {
                 messageRepository.deleteMessageForEveryone(messageId)
-                // Notify peer
-                _uiState.value.peerUser?.id?.let { peerId ->
-                    // Send delete notification
-                }
+                // Notify peer - would need to implement this in MessageRouter
             } else {
                 messageRepository.deleteMessage(messageId)
             }
@@ -249,10 +268,9 @@ class ChatViewModel @Inject constructor(
     }
     
     fun loadMoreMessages() {
-        // Implement pagination
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingMore = true) }
-            // Load more messages
+            // Implement pagination here
             _uiState.update { it.copy(isLoadingMore = false) }
         }
     }
