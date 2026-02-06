@@ -423,4 +423,110 @@ fun AttachmentPickerBottomSheet(
 
 @Composable
 private fun AttachmentPickerContent(
-    onImageClick: () -> 
+    onImageClick: () -> Unit,
+    onVideoClick: () -> Unit,
+    onFileClick: () -> Unit,
+    onCameraClick: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(24.dp)
+    ) {
+        Text(
+            text = "Share",
+            style = MaterialTheme.typography.titleLarge,
+            color = TextPrimary
+        )
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(4),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            item {
+                AttachmentOption(
+                    icon = Icons.Outlined.Image,
+                    label = "Gallery",
+                    color = AccentPink,
+                    onClick = onImageClick
+                )
+            }
+            item {
+                AttachmentOption(
+                    icon = Icons.Outlined.Videocam,
+                    label = "Video",
+                    color = AccentBlue,
+                    onClick = onVideoClick
+                )
+            }
+            item {
+                AttachmentOption(
+                    icon = Icons.Outlined.CameraAlt,
+                    label = "Camera",
+                    color = AccentGreen,
+                    onClick = onCameraClick
+                )
+            }
+            item {
+                AttachmentOption(
+                    icon = Icons.Outlined.InsertDriveFile,
+                    label = "Document",
+                    color = AccentOrange,
+                    onClick = onFileClick
+                )
+            }
+            item {
+                AttachmentOption(
+                    icon = Icons.Outlined.Mic,
+                    label = "Audio",
+                    color = OnlineGreen,
+                    onClick = { }
+                )
+            }
+            item {
+                AttachmentOption(
+                    icon = Icons.Outlined.LocationOn,
+                    label = "Location",
+                    color = ErrorRed,
+                    onClick = { }
+                )
+            }
+            item {
+                AttachmentOption(
+                    icon = Icons.Outlined.Person,
+                    label = "Contact",
+                    color = PrimaryPurple,
+                    onClick = { }
+                )
+            }
+            item {
+                AttachmentOption(
+                    icon = Icons.Outlined.Poll,
+                    label = "Poll",
+                    color = AwayYellow,
+                    onClick = { }
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(32.dp))
+    }
+}
+
+data class SelectedAttachment(
+    val uri: Uri,
+    val type: AttachmentType,
+    val fileName: String? = null,
+    val fileSize: Long = 0
+)
+
+enum class AttachmentType {
+    IMAGE,
+    VIDEO,
+    FILE,
+    AUDIO
+}
