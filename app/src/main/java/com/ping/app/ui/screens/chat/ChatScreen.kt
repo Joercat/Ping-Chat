@@ -1,12 +1,16 @@
-// ui/screens/chat/ChatScreen.kt
+// ui/screens/chat/ChatScreen.kt - Fixed imports section
 package com.ping.app.ui.screens.chat
 
 import android.net.Uri
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -16,12 +20,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import coil.compose.AsyncImage
 import com.ping.app.data.models.*
 import com.ping.app.ui.components.*
 import com.ping.app.ui.theme.*
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     conversationId: String,
@@ -39,6 +44,11 @@ fun ChatScreen(
     
     var replyToMessage by remember { mutableStateOf<Message?>(null) }
     var showMessageOptions by remember { mutableStateOf<Message?>(null) }
+    
+    // Load conversation data
+    LaunchedEffect(conversationId) {
+        viewModel.loadConversation(conversationId)
+    }
     
     // Auto-scroll to bottom on new messages
     LaunchedEffect(messages.size) {
@@ -140,7 +150,6 @@ fun ChatScreen(
                     )
                 }
                 
-                // Date headers
                 // Load more indicator
                 item {
                     if (uiState.isLoadingMore) {
@@ -196,7 +205,6 @@ fun ChatScreen(
                 showMessageOptions = null
             },
             onForward = {
-                // Forward message
                 showMessageOptions = null
             },
             onPin = {
@@ -204,7 +212,6 @@ fun ChatScreen(
                 showMessageOptions = null
             },
             onEdit = {
-                // Edit message
                 showMessageOptions = null
             },
             onDelete = { forEveryone ->
@@ -238,12 +245,12 @@ private fun ChatTopBar(
                     Box(
                         modifier = Modifier
                             .size(40.dp)
-                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .clip(CircleShape)
                             .background(DarkSurfaceVariant),
                         contentAlignment = Alignment.Center
                     ) {
                         peerUser?.avatarUrl?.let { url ->
-                            coil.compose.AsyncImage(
+                            AsyncImage(
                                 model = url,
                                 contentDescription = null,
                                 modifier = Modifier.fillMaxSize()
@@ -362,7 +369,7 @@ private fun MessageOptionsSheet(
                 }
             }
             
-            Divider(color = DividerColor)
+            HorizontalDivider(color = DividerColor)
             
             // Options
             MessageOptionItem(
@@ -481,7 +488,3 @@ private fun shouldShowAvatar(message: Message, messages: List<Message>): Boolean
     val nextMessage = messages.getOrNull(index + 1) ?: return true
     return nextMessage.senderId != message.senderId
 }
-
-private fun Modifier.clickable(onClick: () -> Unit) = this.then(
-    Modifier.clickable(onClick = onClick)
-)
