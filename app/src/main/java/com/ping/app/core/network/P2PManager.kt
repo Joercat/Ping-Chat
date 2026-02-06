@@ -33,7 +33,7 @@ class P2PManager @Inject constructor(
 ) {
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     
     private var serverChannel: Channel? = null
     private val clientChannels = mutableMapOf<String, Channel>()
@@ -41,7 +41,7 @@ class P2PManager @Inject constructor(
     private val bossGroup = NioEventLoopGroup(1)
     private val workerGroup = NioEventLoopGroup()
     
-    private val _incomingMessages = MutableSharedFlow<P2PPacket>()
+    private val _incomingMessages = MutableSharedFlow<P2PPacket>(replay = 0, extraBufferCapacity = 64)
     val incomingMessages: SharedFlow<P2PPacket> = _incomingMessages.asSharedFlow()
     
     private val _connectionStatus = MutableStateFlow<Map<String, ConnectionStatus>>(emptyMap())
@@ -53,6 +53,8 @@ class P2PManager @Inject constructor(
         private const val DEFAULT_PORT = 9876
         private const val MAX_FRAME_LENGTH = 16 * 1024 * 1024 // 16MB for files
     }
+    
+    fun getMyUserId(): String = connectionManager.getMyUserId()
     
     fun startServer(port: Int = DEFAULT_PORT): Int {
         val bootstrap = ServerBootstrap()
@@ -78,16 +80,23 @@ class P2PManager @Inject constructor(
         } catch (e: Exception) {
             // Try alternate port if default is in use
             val altPort = port + 1
-            val channelFuture = bootstrap.bind(altPort).sync()
-            serverChannel = channelFuture.channel()
-            myPort = altPort
-            myPort
+            try {
+                val channelFuture = bootstrap.bind(altPort).sync()
+                serverChannel = channelFuture.channel()
+                myPort = altPort
+                myPort
+            } catch (e2: Exception) {
+                e2.printStackTrace()
+                0
+            }
         }
     }
     
     suspend fun connectToPeer(userId: String, address: String, port: Int): Boolean {
         return withContext(Dispatchers.IO) {
             try {
+                updateConnectionStatus(userId, ConnectionStatus.CONNECTING)
+                
                 val bootstrap = Bootstrap()
                     .group(workerGroup)
                     .channel(NioSocketChannel::class.java)
@@ -112,9 +121,11 @@ class P2PManager @Inject constructor(
                     sendHandshake(userId)
                     true
                 } else {
+                    updateConnectionStatus(userId, ConnectionStatus.FAILED)
                     false
                 }
             } catch (e: Exception) {
+                e.printStackTrace()
                 updateConnectionStatus(userId, ConnectionStatus.FAILED)
                 false
             }
@@ -124,7 +135,7 @@ class P2PManager @Inject constructor(
     private suspend fun sendHandshake(userId: String) {
         val handshake = HandshakePacket(
             publicKey = keyExchange.getMyPublicKeyString(),
-            userId = connectionManager.getMyUserId()
+            oderId = connectionManager.getMyUserId()
         )
         sendPacket(userId, P2PPacket.Handshake(handshake))
     }
@@ -132,15 +143,20 @@ class P2PManager @Inject constructor(
     suspend fun sendMessage(userId: String, message: Message): Boolean {
         val sessionKey = keyExchange.getSessionKey(userId) ?: return false
         
-        val messageJson = json.encodeToString(message.toTransport())
-        val encrypted = cryptoManager.encryptMessage(messageJson.toByteArray(), sessionKey)
-        
-        val packet = P2PPacket.EncryptedMessage(
-            senderId = connectionManager.getMyUserId(),
-            encryptedData = encrypted.toByteArray()
-        )
-        
-        return sendPacket(userId, packet)
+        try {
+            val messageJson = json.encodeToString(message.toTransport())
+            val encrypted = cryptoManager.encryptMessage(messageJson.toByteArray(), sessionKey)
+            
+            val packet = P2PPacket.EncryptedMessage(
+                senderId = connectionManager.getMyUserId(),
+                encryptedData = encrypted.toByteArray()
+            )
+            
+            return sendPacket(userId, packet)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        }
     }
     
     suspend fun sendFile(userId: String, attachment: Attachment, fileData: ByteArray): Boolean {
@@ -151,20 +167,25 @@ class P2PManager @Inject constructor(
             return false
         }
         
-        val encrypted = cryptoManager.encryptFile(fileData, sessionKey)
-        val checksum = cryptoManager.calculateChecksum(fileData)
-        
-        val packet = P2PPacket.FileTransfer(
-            attachmentId = attachment.id,
-            messageId = attachment.messageId,
-            fileName = attachment.fileName,
-            mimeType = attachment.mimeType,
-            fileSize = fileData.size.toLong(),
-            encryptedData = encrypted.toByteArray(),
-            checksum = checksum
-        )
-        
-        return sendPacket(userId, packet)
+        try {
+            val encrypted = cryptoManager.encryptFile(fileData, sessionKey)
+            val checksum = cryptoManager.calculateChecksum(fileData)
+            
+            val packet = P2PPacket.FileTransfer(
+                attachmentId = attachment.id,
+                messageId = attachment.messageId,
+                fileName = attachment.fileName,
+                mimeType = attachment.mimeType,
+                fileSize = fileData.size.toLong(),
+                encryptedData = encrypted.toByteArray(),
+                checksum = checksum
+            )
+            
+            return sendPacket(userId, packet)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        }
     }
     
     suspend fun sendTypingIndicator(userId: String, conversationId: String, isTyping: Boolean): Boolean {
@@ -208,11 +229,12 @@ class P2PManager @Inject constructor(
             }
             
             try {
-                val packetJson = json.encodeToString(packet)
+                val packetJson = json.encodeToString(P2PPacketWrapper(packet))
                 val buffer = Unpooled.copiedBuffer(packetJson.toByteArray())
                 channel.writeAndFlush(buffer).sync()
                 true
             } catch (e: Exception) {
+                e.printStackTrace()
                 false
             }
         }
@@ -228,6 +250,10 @@ class P2PManager @Inject constructor(
     
     private fun updateConnectionStatus(userId: String, status: ConnectionStatus) {
         _connectionStatus.value = _connectionStatus.value + (userId to status)
+    }
+    
+    fun isConnectedTo(userId: String): Boolean {
+        return clientChannels[userId]?.isActive == true
     }
     
     fun disconnect(userId: String) {
@@ -253,27 +279,31 @@ class P2PManager @Inject constructor(
             msg.readBytes(bytes)
             
             scope.launch {
-                val packetJson = String(bytes)
-                val packet = json.decodeFromString<P2PPacket>(packetJson)
-                handleIncomingPacket(ctx.channel(), packet)
+                try {
+                    val packetJson = String(bytes)
+                    val wrapper = json.decodeFromString<P2PPacketWrapper>(packetJson)
+                    handleIncomingPacket(ctx.channel(), wrapper.packet)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
         
         private suspend fun handleIncomingPacket(channel: Channel, packet: P2PPacket) {
             when (packet) {
                 is P2PPacket.Handshake -> {
-                    connectedUserId = packet.data.userId
-                    clientChannels[packet.data.userId] = channel
-                    keyExchange.establishSession(packet.data.userId, packet.data.publicKey)
-                    updateConnectionStatus(packet.data.userId, ConnectionStatus.CONNECTED)
+                    connectedUserId = packet.data.senderId
+                    clientChannels[packet.data.senderId] = channel
+                    keyExchange.establishSession(packet.data.senderId, packet.data.publicKey)
+                    updateConnectionStatus(packet.data.senderId, ConnectionStatus.CONNECTED)
                     
                     // Send our handshake back
                     val response = HandshakePacket(
                         publicKey = keyExchange.getMyPublicKeyString(),
-                        userId = connectionManager.getMyUserId()
+                        senderId = connectionManager.getMyUserId()
                     )
                     val responsePacket = P2PPacket.Handshake(response)
-                    val responseJson = json.encodeToString(responsePacket)
+                    val responseJson = json.encodeToString(P2PPacketWrapper(responsePacket))
                     channel.writeAndFlush(Unpooled.copiedBuffer(responseJson.toByteArray()))
                 }
                 else -> _incomingMessages.emit(packet)
@@ -288,6 +318,7 @@ class P2PManager @Inject constructor(
         }
         
         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
+            cause.printStackTrace()
             ctx.close()
         }
     }
@@ -299,14 +330,18 @@ class P2PManager @Inject constructor(
             msg.readBytes(bytes)
             
             scope.launch {
-                val packetJson = String(bytes)
-                val packet = json.decodeFromString<P2PPacket>(packetJson)
-                
-                when (packet) {
-                    is P2PPacket.Handshake -> {
-                        keyExchange.establishSession(peerId, packet.data.publicKey)
+                try {
+                    val packetJson = String(bytes)
+                    val wrapper = json.decodeFromString<P2PPacketWrapper>(packetJson)
+                    
+                    when (val packet = wrapper.packet) {
+                        is P2PPacket.Handshake -> {
+                            keyExchange.establishSession(peerId, packet.data.publicKey)
+                        }
+                        else -> _incomingMessages.emit(packet)
                     }
-                    else -> _incomingMessages.emit(packet)
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
             }
         }
@@ -316,6 +351,7 @@ class P2PManager @Inject constructor(
         }
         
         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
+            cause.printStackTrace()
             ctx.close()
         }
     }
@@ -329,6 +365,11 @@ enum class ConnectionStatus {
 }
 
 @Serializable
+data class P2PPacketWrapper(
+    val packet: P2PPacket
+)
+
+@Serializable
 sealed class P2PPacket {
     @Serializable
     data class Handshake(val data: HandshakePacket) : P2PPacket()
@@ -337,7 +378,15 @@ sealed class P2PPacket {
     data class EncryptedMessage(
         val senderId: String,
         val encryptedData: ByteArray
-    ) : P2PPacket()
+    ) : P2PPacket() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as EncryptedMessage
+            return senderId == other.senderId && encryptedData.contentEquals(other.encryptedData)
+        }
+        override fun hashCode(): Int = 31 * senderId.hashCode() + encryptedData.contentHashCode()
+    }
     
     @Serializable
     data class FileTransfer(
@@ -348,7 +397,15 @@ sealed class P2PPacket {
         val fileSize: Long,
         val encryptedData: ByteArray,
         val checksum: String
-    ) : P2PPacket()
+    ) : P2PPacket() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as FileTransfer
+            return attachmentId == other.attachmentId
+        }
+        override fun hashCode(): Int = attachmentId.hashCode()
+    }
     
     @Serializable
     data class TypingIndicator(
@@ -376,7 +433,7 @@ sealed class P2PPacket {
     @Serializable
     data class Reaction(
         val messageId: String,
-        val userId: String,
+        val oderId: String,
         val emoji: String,
         val isRemoved: Boolean = false
     ) : P2PPacket()
@@ -398,7 +455,7 @@ sealed class P2PPacket {
 @Serializable
 data class HandshakePacket(
     val publicKey: String,
-    val userId: String
+    val senderId: String
 )
 
 @Serializable
@@ -409,7 +466,7 @@ data class TransportMessage(
     val receiverId: String,
     val content: String,
     val type: String,
-    val replyToId: String?,
+    val replyToId: String? = null,
     val createdAt: Long
 )
 
