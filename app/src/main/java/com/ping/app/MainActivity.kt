@@ -4,26 +4,32 @@ package com.ping.app
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.navigation.navDeepLink
 import com.ping.app.core.encryption.SecureStorage
 import com.ping.app.services.PingMessagingService
 import com.ping.app.services.PresenceService
@@ -32,11 +38,13 @@ import com.ping.app.ui.screens.chat.ChatScreen
 import com.ping.app.ui.screens.conversations.ConversationsScreen
 import com.ping.app.ui.screens.newchat.NewChatScreen
 import com.ping.app.ui.screens.profile.ProfileScreen
-import com.ping.app.ui.screens.settings.NotificationSettingsScreen
-import com.ping.app.ui.screens.settings.PrivacySettingsScreen
-import com.ping.app.ui.screens.settings.SettingsScreen
+import com.ping.app.ui.screens.settings.*
 import com.ping.app.ui.screens.splash.SplashScreen
+import com.ping.app.ui.theme.DarkBackground
 import com.ping.app.ui.theme.PingTheme
+import com.ping.app.ui.theme.PrimaryPurple
+import com.ping.app.ui.theme.TextPrimary
+import com.ping.app.ui.theme.TextSecondary
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -47,12 +55,28 @@ class MainActivity : ComponentActivity() {
     lateinit var secureStorage: SecureStorage
     
     private var keepSplashScreen = true
+    private var pendingConversationId: String? = null
+    
+    // Navigation controller reference for deep linking
+    private var navController: NavHostController? = null
     
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.all { it.value }
         if (allGranted) {
+            startServices()
+        } else {
+            // Show which permissions were denied
+            val deniedPermissions = permissions.filter { !it.value }.keys
+            if (deniedPermissions.isNotEmpty()) {
+                Toast.makeText(
+                    this,
+                    "Some features may not work without permissions",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            // Still start services for basic functionality
             startServices()
         }
     }
@@ -66,24 +90,42 @@ class MainActivity : ComponentActivity() {
         
         super.onCreate(savedInstanceState)
         
+        // Handle initial intent
+        pendingConversationId = extractConversationIdFromIntent(intent)
+        
         setContent {
             PingTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    var showCustomSplash by remember { mutableStateOf(true) }
+                    var showCustomSplash by remember { mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.S) }
                     var isUserLoggedIn by remember { mutableStateOf<Boolean?>(null) }
                     
-                    val navController = rememberNavController()
+                    val navControllerState = rememberNavController()
+                    
+                    // Store nav controller reference
+                    LaunchedEffect(navControllerState) {
+                        navController = navControllerState
+                    }
                     
                     // Check login status
                     LaunchedEffect(Unit) {
-                        isUserLoggedIn = secureStorage.getUserId() != null
+                        isUserLoggedIn = checkUserLoggedIn()
                         keepSplashScreen = false
                     }
                     
-                    if (showCustomSplash && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                    // Handle pending navigation after login check
+                    LaunchedEffect(isUserLoggedIn, pendingConversationId) {
+                        if (isUserLoggedIn == true && pendingConversationId != null) {
+                            navControllerState.navigate(Screen.Chat.createRoute(pendingConversationId!!)) {
+                                popUpTo(Screen.Conversations.route)
+                            }
+                            pendingConversationId = null
+                        }
+                    }
+                    
+                    if (showCustomSplash) {
                         SplashScreen(
                             onSplashComplete = { loggedIn ->
                                 showCustomSplash = false
@@ -93,15 +135,10 @@ class MainActivity : ComponentActivity() {
                     } else {
                         isUserLoggedIn?.let { loggedIn ->
                             PingNavHost(
-                                navController = navController,
+                                navController = navControllerState,
                                 startDestination = if (loggedIn) Screen.Conversations.route else Screen.Auth.route,
                                 onAuthComplete = {
                                     checkAndRequestPermissions()
-                                },
-                                onLogout = {
-                                    navController.navigate(Screen.Auth.route) {
-                                        popUpTo(0) { inclusive = true }
-                                    }
                                 }
                             )
                         }
@@ -109,21 +146,49 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        
-        // Handle notification intent
-        handleIntent(intent)
     }
     
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleIntent(intent)
+        setIntent(intent)
+        
+        val conversationId = extractConversationIdFromIntent(intent)
+        if (conversationId != null) {
+            navController?.let { nav ->
+                nav.navigate(Screen.Chat.createRoute(conversationId)) {
+                    popUpTo(Screen.Conversations.route) {
+                        saveState = true
+                    }
+                    launchSingleTop = true
+                    restoreState = true
+                }
+            } ?: run {
+                pendingConversationId = conversationId
+            }
+        }
     }
     
-    private fun handleIntent(intent: Intent?) {
-        val conversationId = intent?.getStringExtra(EXTRA_CONVERSATION_ID)
-        if (conversationId != null) {
-            // Navigate to conversation - this would require a more complex setup
-            // with a shared ViewModel or saved state
+    private fun extractConversationIdFromIntent(intent: Intent?): String? {
+        if (intent == null) return null
+        
+        // From notification extras
+        intent.getStringExtra(EXTRA_CONVERSATION_ID)?.let { return it }
+        
+        // From deep link
+        intent.data?.let { uri ->
+            if (uri.scheme == "ping" && uri.host == "chat") {
+                return uri.getQueryParameter("id") ?: uri.lastPathSegment
+            }
+        }
+        
+        return null
+    }
+    
+    private fun checkUserLoggedIn(): Boolean {
+        return try {
+            secureStorage.getUserId() != null
+        } catch (e: Exception) {
+            false
         }
     }
     
@@ -139,7 +204,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         
-        // Media permissions
+        // Media permissions (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)
                 != PackageManager.PERMISSION_GRANTED
@@ -164,11 +229,18 @@ class MainActivity : ComponentActivity() {
             }
         }
         
-        // Camera permission
+        // Camera permission - FIXED: Now requested at runtime
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED
         ) {
             permissions.add(Manifest.permission.CAMERA)
+        }
+        
+        // Audio recording permission - FIXED: Now requested at runtime
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissions.add(Manifest.permission.RECORD_AUDIO)
         }
         
         if (permissions.isNotEmpty()) {
@@ -179,33 +251,32 @@ class MainActivity : ComponentActivity() {
     }
     
     private fun startServices() {
-        // Start messaging service
-        val messagingServiceIntent = Intent(this, PingMessagingService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(messagingServiceIntent)
-        } else {
-            startService(messagingServiceIntent)
+        try {
+            // Start messaging service
+            val messagingServiceIntent = Intent(this, PingMessagingService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(messagingServiceIntent)
+            } else {
+                startService(messagingServiceIntent)
+            }
+            
+            // Start presence service
+            val presenceServiceIntent = Intent(this, PresenceService::class.java)
+            startService(presenceServiceIntent)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        
-        // Start presence service
-        val presenceServiceIntent = Intent(this, PresenceService::class.java)
-        startService(presenceServiceIntent)
-    }
-    
-    override fun onDestroy() {
-        super.onDestroy()
-        // Services will continue running in background
     }
     
     companion object {
         const val EXTRA_CONVERSATION_ID = "extra_conversation_id"
         const val EXTRA_USER_ID = "extra_user_id"
+        const val ACTION_OPEN_CHAT = "com.ping.app.OPEN_CHAT"
     }
 }
 
 // Navigation routes
 sealed class Screen(val route: String) {
-    object Splash : Screen("splash")
     object Auth : Screen("auth")
     object Conversations : Screen("conversations")
     object Chat : Screen("chat/{conversationId}") {
@@ -227,10 +298,9 @@ sealed class Screen(val route: String) {
 
 @Composable
 fun PingNavHost(
-    navController: androidx.navigation.NavHostController,
+    navController: NavHostController,
     startDestination: String,
-    onAuthComplete: () -> Unit,
-    onLogout: () -> Unit
+    onAuthComplete: () -> Unit
 ) {
     NavHost(
         navController = navController,
@@ -287,11 +357,14 @@ fun PingNavHost(
             )
         }
         
-        // Chat Screen
+        // Chat Screen with deep link support
         composable(
             route = Screen.Chat.route,
             arguments = listOf(
                 navArgument("conversationId") { type = NavType.StringType }
+            ),
+            deepLinks = listOf(
+                navDeepLink { uriPattern = "ping://chat/{conversationId}" }
             )
         ) { backStackEntry ->
             val conversationId = backStackEntry.arguments?.getString("conversationId") ?: ""
@@ -313,16 +386,12 @@ fun PingNavHost(
                         popUpTo(Screen.NewChat.route) { inclusive = true }
                     }
                 },
-                onCreateGroup = {
-                    // Navigate to create group screen
-                },
-                onScanQr = {
-                    // Navigate to QR scanner
-                }
+                onCreateGroup = { },
+                onScanQr = { }
             )
         }
         
-        // Profile Screen (other users)
+        // Profile Screen
         composable(
             route = Screen.Profile.route,
             arguments = listOf(
@@ -360,136 +429,55 @@ fun PingNavHost(
         composable(Screen.Settings.route) {
             SettingsScreen(
                 onNavigateBack = { navController.popBackStack() },
-                onNavigateToProfile = {
-                    navController.navigate(Screen.MyProfile.route)
-                },
-                onNavigateToPrivacy = {
-                    navController.navigate(Screen.PrivacySettings.route)
-                },
-                onNavigateToNotifications = {
-                    navController.navigate(Screen.NotificationSettings.route)
-                },
-                onNavigateToStorage = {
-                    navController.navigate(Screen.StorageSettings.route)
-                },
-                onNavigateToHelp = {
-                    navController.navigate(Screen.Help.route)
-                },
-                onNavigateToAbout = {
-                    navController.navigate(Screen.About.route)
-                }
+                onNavigateToProfile = { navController.navigate(Screen.MyProfile.route) },
+                onNavigateToPrivacy = { navController.navigate(Screen.PrivacySettings.route) },
+                onNavigateToNotifications = { navController.navigate(Screen.NotificationSettings.route) },
+                onNavigateToStorage = { navController.navigate(Screen.StorageSettings.route) },
+                onNavigateToHelp = { navController.navigate(Screen.Help.route) },
+                onNavigateToAbout = { navController.navigate(Screen.About.route) }
             )
         }
         
-        // Privacy Settings Screen
+        // Privacy Settings
         composable(Screen.PrivacySettings.route) {
             PrivacySettingsScreen(
                 onNavigateBack = { navController.popBackStack() },
-                onNavigateToBlockedContacts = {
-                    navController.navigate(Screen.BlockedContacts.route)
-                }
+                onNavigateToBlockedContacts = { navController.navigate(Screen.BlockedContacts.route) }
             )
         }
         
-        // Notification Settings Screen
+        // Notification Settings
         composable(Screen.NotificationSettings.route) {
             NotificationSettingsScreen(
                 onNavigateBack = { navController.popBackStack() }
             )
         }
         
-        // Storage Settings Screen
+        // Storage Settings - IMPLEMENTED
         composable(Screen.StorageSettings.route) {
             StorageSettingsScreen(
                 onNavigateBack = { navController.popBackStack() }
             )
         }
         
-        // Blocked Contacts Screen
+        // Blocked Contacts - IMPLEMENTED
         composable(Screen.BlockedContacts.route) {
             BlockedContactsScreen(
                 onNavigateBack = { navController.popBackStack() }
             )
         }
         
-        // Help Screen
+        // Help - IMPLEMENTED
         composable(Screen.Help.route) {
             HelpScreen(
                 onNavigateBack = { navController.popBackStack() }
             )
         }
         
-        // About Screen
+        // About - IMPLEMENTED
         composable(Screen.About.route) {
             AboutScreen(
                 onNavigateBack = { navController.popBackStack() }
-            )
-        }
-    }
-}
-
-// Placeholder screens for missing ones
-@Composable
-fun StorageSettingsScreen(onNavigateBack: () -> Unit) {
-    PlaceholderScreen(title = "Storage & Data", onNavigateBack = onNavigateBack)
-}
-
-@Composable
-fun BlockedContactsScreen(onNavigateBack: () -> Unit) {
-    PlaceholderScreen(title = "Blocked Contacts", onNavigateBack = onNavigateBack)
-}
-
-@Composable
-fun HelpScreen(onNavigateBack: () -> Unit) {
-    PlaceholderScreen(title = "Help", onNavigateBack = onNavigateBack)
-}
-
-@Composable
-fun AboutScreen(onNavigateBack: () -> Unit) {
-    PlaceholderScreen(title = "About Ping", onNavigateBack = onNavigateBack)
-}
-
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun PlaceholderScreen(
-    title: String,
-    onNavigateBack: () -> Unit
-) {
-    androidx.compose.material3.Scaffold(
-        topBar = {
-            androidx.compose.material3.TopAppBar(
-                title = {
-                    androidx.compose.material3.Text(
-                        text = title,
-                        color = com.ping.app.ui.theme.TextPrimary
-                    )
-                },
-                navigationIcon = {
-                    androidx.compose.material3.IconButton(onClick = onNavigateBack) {
-                        androidx.compose.material3.Icon(
-                            imageVector = androidx.compose.material.icons.Icons.Default.ArrowBack,
-                            contentDescription = "Back",
-                            tint = com.ping.app.ui.theme.TextPrimary
-                        )
-                    }
-                },
-                colors = androidx.compose.material3.TopAppBarDefaults.topAppBarColors(
-                    containerColor = com.ping.app.ui.theme.DarkBackground
-                )
-            )
-        },
-        containerColor = com.ping.app.ui.theme.DarkBackground
-    ) { paddingValues ->
-        androidx.compose.foundation.layout.Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
-            contentAlignment = androidx.compose.ui.Alignment.Center
-        ) {
-            androidx.compose.material3.Text(
-                text = "Coming Soon",
-                style = MaterialTheme.typography.headlineSmall,
-                color = com.ping.app.ui.theme.TextSecondary
             )
         }
     }
