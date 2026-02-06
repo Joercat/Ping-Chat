@@ -19,7 +19,7 @@ class MessageRepository @Inject constructor(
     private val attachmentDao: AttachmentDao
 ) {
     
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     
     fun getMessages(conversationId: String): Flow<List<Message>> {
         return messageDao.getMessagesByConversation(conversationId).map { entities ->
@@ -31,8 +31,8 @@ class MessageRepository @Inject constructor(
         return messageDao.getMessageById(messageId)?.toModel()
     }
     
-    suspend fun getUnreadMessages(conversationId: String): List<Message> {
-        return messageDao.getUnseenMessages(conversationId, "").map { it.toModel() }
+    suspend fun getUnreadMessages(conversationId: String, currentUserId: String): List<Message> {
+        return messageDao.getUnseenMessages(conversationId, currentUserId).map { it.toModel() }
     }
     
     suspend fun getFailedMessages(): List<Message> {
@@ -74,9 +74,15 @@ class MessageRepository @Inject constructor(
     suspend fun addReaction(messageId: String, userId: String, emoji: String) {
         val message = messageDao.getMessageById(messageId) ?: return
         val reactions = message.reactionsJson?.let { 
-            json.decodeFromString<List<Reaction>>(it) 
-        }?.toMutableList() ?: mutableListOf()
+            try {
+                json.decodeFromString<List<Reaction>>(it).toMutableList()
+            } catch (e: Exception) {
+                mutableListOf()
+            }
+        } ?: mutableListOf()
         
+        // Remove existing reaction from this user if any
+        reactions.removeAll { it.userId == userId }
         reactions.add(Reaction(userId, emoji))
         
         messageDao.updateMessage(message.copy(
@@ -87,13 +93,17 @@ class MessageRepository @Inject constructor(
     suspend fun removeReaction(messageId: String, userId: String) {
         val message = messageDao.getMessageById(messageId) ?: return
         val reactions = message.reactionsJson?.let { 
-            json.decodeFromString<List<Reaction>>(it) 
-        }?.toMutableList() ?: return
+            try {
+                json.decodeFromString<List<Reaction>>(it).toMutableList()
+            } catch (e: Exception) {
+                mutableListOf()
+            }
+        } ?: return
         
         reactions.removeAll { it.userId == userId }
         
         messageDao.updateMessage(message.copy(
-            reactionsJson = json.encodeToString(reactions)
+            reactionsJson = if (reactions.isNotEmpty()) json.encodeToString(reactions) else null
         ))
     }
     
@@ -151,7 +161,11 @@ class MessageRepository @Inject constructor(
     
     private fun MessageEntity.toModel(): Message {
         val reactions = reactionsJson?.let { 
-            json.decodeFromString<List<Reaction>>(it) 
+            try {
+                json.decodeFromString<List<Reaction>>(it)
+            } catch (e: Exception) {
+                emptyList()
+            }
         } ?: emptyList()
         
         return Message(
