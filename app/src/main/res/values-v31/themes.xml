@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Splash screen theme for Android 12+ -->
+    <style name="Theme.Ping.Splash" parent="Theme.Ping">
+        <item name="android:windowSplashScreenBackground">@color/dark_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/primary_purple</item>
+        <item name="android:windowSplashScreenAnimationDuration">1000</item>
+    </style>
+</resources>
