@@ -3,6 +3,7 @@ package com.ping.app.data.models
 
 import android.os.Parcelable
 import kotlinx.parcelize.Parcelize
+import kotlinx.serialization.Serializable
 import java.util.UUID
 
 @Parcelize
@@ -38,6 +39,7 @@ data class Message(
     override fun hashCode(): Int = id.hashCode()
 }
 
+@Serializable
 enum class MessageType {
     TEXT,
     IMAGE,
@@ -52,6 +54,7 @@ enum class MessageType {
     SYSTEM
 }
 
+@Serializable
 enum class MessageStatus {
     SENDING,
     SENT,
@@ -61,6 +64,7 @@ enum class MessageStatus {
 }
 
 @Parcelize
+@Serializable
 data class Reaction(
     val userId: String,
     val emoji: String,
