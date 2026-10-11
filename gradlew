@@ -246,4 +246,35 @@ eval "set -- $(
         tr '\n' ' '
     )" '"$@"'
 
+# ---------------------------------------------------------------------------------------------
+# Ping addition (the only change to the generated wrapper script).
+#
+# CI has no way of reading a failed Gradle log from outside GitHub, and "the build failed" is not
+# enough to fix anything. When running under GitHub Actions this arrives as a GitHub workflow
+# command, so each real compiler error becomes an annotation on the run — which can be read with
+# the API, and shown inline in the Checks tab for whoever is looking at it:
+#
+#   ::error:: e: file:///home/runner/work/.../Engine.kt:120:34 Unresolved reference: foo
+#
+# Outside CI nothing changes: the build output goes to the terminal exactly as before.
+# ---------------------------------------------------------------------------------------------
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    PING_LOG="${PING_GRADLE_LOG:-${TMPDIR:-/tmp}/ping-gradle.log}"
+    "$JAVACMD" "$@" > "$PING_LOG" 2>&1
+    PING_STATUS=$?
+    cat "$PING_LOG"
+    if [ "$PING_STATUS" -ne 0 ]; then
+        # The first few true compiler errors, then the Gradle failure block. Both are what a
+        # human would read at the top of the log.
+        {
+            grep -E "^(e|w): " "$PING_LOG" | grep "^e: " | head -8
+            grep -A 4 -E "^\* What went wrong:" "$PING_LOG" | head -12
+            grep -E "^(FAILURE:|> Task .* FAILED|Caused by: )" "$PING_LOG" | head -4
+        } | sed 's/\r$//' | while IFS= read -r line; do
+            [ -n "$line" ] && printf '::error::%s\n' "$(printf '%s' "$line" | cut -c1-380)"
+        done
+    fi
+    exit "$PING_STATUS"
+fi
+
 exec "$JAVACMD" "$@"

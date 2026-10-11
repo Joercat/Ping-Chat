@@ -79,6 +79,15 @@ a static checker could see:
 `tools/static-checks/check_symbols.py` gained a check for platform/JDK types used without an
 import — the same class of mistake as the `FileInputStream` bug, now caught locally.
 
+### Reading a failed run without the raw log
+
+GitHub's log and artifact downloads are not reachable from the environment that maintains this
+repository, and the job page needs a signed-in session. `gradlew` therefore carries one small,
+clearly marked addition: under GitHub Actions it tees the build output to a file, and on failure
+prints the real compiler errors as `::error::` workflow commands. The runner turns those into
+annotations on the check run, which *are* readable with the API (and show up inline in the Checks
+tab for anyone looking at the pull request). Outside CI the wrapper behaves exactly as generated.
+
 ## First thing to do next
 
 1. Update `.github/workflows/android.yml` — it still contains `android-actions/setup-android@v3`.
