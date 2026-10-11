@@ -79,6 +79,21 @@ a static checker could see:
 `tools/static-checks/check_symbols.py` gained a check for platform/JDK types used without an
 import — the same class of mistake as the `FileInputStream` bug, now caught locally.
 
+### Run 4 (2026-10-11) — the manifest was in the wrong directory
+
+Past the wrapper and the build script, Gradle reached the Android tasks and stopped:
+
+```
+> Task :app:processDebugMainManifest FAILED
+property 'mainManifest' specifies file '.../app/src/main/AndroidManifest.xml' which doesn't exist
+```
+
+The manifest existed, but one directory too deep (`app/src/main/res/AndroidManifest.xml`). Android
+expects exactly `app/src/main/AndroidManifest.xml`; `res/` holds resources only. Moved, and the
+file itself parses with the service and both receivers in place.
+
+Found via the annotation mechanism described below — no log copying needed.
+
 ### Reading a failed run without the raw log
 
 GitHub's log and artifact downloads are not reachable from the environment that maintains this
