@@ -1,16 +1,3 @@
-# Ping — Android CI
-#
-# This file is a TEMPLATE. It lives outside .github/workflows on purpose: the machine that
-# pushed it is not allowed to write workflow files. To switch CI on, either
-#   • GitHub → Actions → New workflow → "set up a workflow yourself", paste this whole file, or
-#   • copy it to .github/workflows/android.yml with a GitHub token that has `workflow` scope.
-#
-# What it does:
-#   1. runs the crypto/protocol self-tests (hundreds of assertions, plain JUnit, no device)
-#   2. builds a debug APK and a release APK
-#   3. uploads both as artifacts
-#   4. on `main`, refreshes a rolling "latest" release you can download straight from the phone
-
 name: Android CI
 
 on:
