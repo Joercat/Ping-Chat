@@ -23,12 +23,70 @@ between them at any time without touching the app:
 
 | Relay | Where | File |
 | --- | --- | --- |
+| Node.js on **Render** | Render's free plan, deploy from this repository in one click | `render.yaml` + `server/node/` |
 | Cloudflare Worker + Durable Objects | Cloudflare's free plan (no card, no server) | `server/cloudflare/` |
 | Node.js | any computer you already have | `server/node/server.js` |
 
+| Free host | Sleeps after | Wake-up time | Monthly allowance | Note |
+| --- | --- | --- | --- | --- |
+| Render free web service | 15 min without traffic | ~1 min | 750 instance hours per workspace | the app's keep-alive keeps it awake while Ping runs |
+| Cloudflare Workers free | never | none | 100k requests/day | edge-native, no container to wake |
+
+Neither host can read anything: the relay only ever forwards sealed envelopes and holds them in
+RAM.
+
 ---
 
-## Option A — Cloudflare Workers (recommended: free forever, nothing to maintain)
+## Option A — Render, free plan (the one-click one)
+
+Render runs the zero-dependency Node relay as-is. The blueprint in `render.yaml` is already in this
+repository, so there is nothing to write:
+
+1. Create a free account at [render.com](https://render.com) (no card required).
+2. Dashboard → **New +** → **Blueprint** → pick this repository (`Joercat/Ping-Chat`) → **Apply**.
+   Render reads `render.yaml`, sets the start command, the health check and the environment, and
+   starts the service. The first build takes a couple of minutes.
+3. When it is live, copy the service URL from the top of the page —
+   `https://ping-relay-XXXX.onrender.com`.
+4. In Ping: **Settings → Relay address**, paste the URL, press **Save and test**. Ping publishes its
+   keys and reports “Connected to the relay”.
+5. Add a contact and send a message. That is the whole setup.
+
+**What the free plan means, honestly**
+
+* A free web service **spins down after 15 minutes without traffic** and takes about a minute to
+  come back. Ping is built for that: while the app (or its foreground service) is running it sends
+  `GET /v1/health` at least every ten minutes — the switch is **Settings → Keep the relay awake**,
+  on by default — so the relay stays up while your phone is on. When nothing is pinging, the first
+  message simply takes longer: the app waits up to 90 seconds for the instance to boot instead of
+  declaring the relay offline.
+* **750 instance hours per workspace per month.** A service that is awake 24/7 uses ~720 of them,
+  so keep this the only free web service in the workspace if you want it always warm. Spun-down
+  time is not counted.
+* The **filesystem is wiped on every deploy and restart**, and Render may restart free instances at
+  any time. That is fine here: envelopes are in RAM by design, so a restart can only drop an
+  undelivered envelope — the sender's outbox notices the missing acknowledgement and sends it again
+  (messages are only marked delivered once the other phone acknowledges them). The only thing that
+  would be lost is the public pre-key material in `/tmp`, which Ping re-publishes automatically.
+* Bandwidth and build minutes are metered as well, but a text conversation moves a few kilobytes
+  per message; the free allowances are far away unless you send GBs of attachments.
+* If you want the relay warm even when your phone is off, point any uptime pinger
+  ([cron-job.org](https://cron-job.org), UptimeRobot — free) at
+  `https://your-service.onrender.com/v1/health` every 10 minutes. That is optional: it keeps the
+  first message of the day instant instead of “about a minute”.
+
+**Verifying the deployment** (any host, from a computer):
+
+```bash
+curl -s https://your-service.onrender.com/v1/health
+# {"ok":true,"version":1,…,"policy":{"storesMessagesOnDisk":false,"diskContents":"public pre-key bundles only"}}
+```
+
+`storesMessagesOnDisk` must be `false`; that is the promise, in the relay's own words.
+
+---
+
+## Option B — Cloudflare Workers (free forever, nothing to maintain)
 
 Cloudflare's free plan covers this relay comfortably and needs no credit card. Follow
 [`../server/cloudflare/README.md`](../server/cloudflare/README.md); the short version is:
@@ -60,7 +118,7 @@ Why this is the default recommendation:
 
 ---
 
-## Option B — the Node relay on hardware you already own
+## Option C — the Node relay on hardware you already own
 
 Perfect if you have a Raspberry Pi, a home server, a NAS, or an old Android phone running
 Termux. It is a single file with **no dependencies at all** (not even npm packages):
@@ -87,7 +145,7 @@ Notes:
 
 ---
 
-## Option C — a free-tier virtual machine
+## Option D — a free-tier virtual machine
 
 Oracle Cloud's *Always Free* ARM VM, Fly.io's free allowance, or any small VPS works: run the
 Node relay behind Caddy or nginx for automatic HTTPS. This is the most "traditional" path and
@@ -118,7 +176,7 @@ Then point Caddy at it (`ping.example.com { reverse_proxy 127.0.0.1:8080 }`) and
 
 ---
 
-## Option D — no relay at all (LAN only)
+## Option E — no relay at all (LAN only)
 
 Leave **Relay address** empty in the app. Ping then uses mDNS discovery and a direct encrypted
 socket on the local network, which is all you need at home, in an office, or in a café where
@@ -157,12 +215,23 @@ Same place in both build variants: **Settings → Relay address**, then **Save a
 
 | Relay URL | Result |
 | --- | --- |
-| `https://ping-relay.you.workers.dev` | recommended |
+| `https://ping-relay-XXXX.onrender.com` | recommended (deploy with `render.yaml`) |
+| `https://ping-relay.you.workers.dev` | also recommended (Cloudflare free plan) |
 | `http://192.168.1.20:8080` | allowed only for private addresses (`Allow plain HTTP for private addresses`) |
 | empty | LAN-only mode |
 
 The app checks the URL (no plain HTTP to the public internet, no redirects to another host),
-registers the device's signed pre-key bundle, and reports any refusal by name. Two people do
+registers the device's signed pre-key bundle, and reports any refusal by name. It also waits up to
+90 seconds for the first answer, so a host that has put an idle relay to sleep still works: the
+request itself wakes the instance.
+
+**Keep the relay awake.** With **Settings → Keep the relay awake** on (the default), Ping sends
+`GET /v1/health` whenever it has been quiet for ten minutes — while the app or its foreground
+service runs — which is the traffic a free host like Render counts as activity, so the instance
+never reaches its spin-down timer. The screen shows *Relay last answered: …* so you can see it
+happening. Turn it off and the relay simply takes about a minute to wake when you next use it; it
+cannot cost you a message, because an envelope is only dropped by the sender's outbox after the
+other phone acknowledges it. Two people do
 not need the same relay to talk to each other: the mailbox lives on the relay that the *sender*
 knows for that contact, which travels in the contact code. In practice, agree on one relay per
 friend group so everybody can reach everybody.

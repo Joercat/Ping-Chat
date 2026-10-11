@@ -159,6 +159,7 @@ class Engine(private val graph: AppGraph) {
             return null
         }
         return try {
+            wakeRelayIfStale()
             val unpublished = graph.onDb {
                 graph.identity.refreshPreKeys()
                 cryptoStore.unpublishedPreKeys(200)
@@ -176,6 +177,7 @@ class Engine(private val graph: AppGraph) {
             )
             graph.onDb { cryptoStore.markPreKeysPublished(unpublished.map { it.first }) }
             settings.setPreKeyPublication(System.currentTimeMillis(), signedPreKey.id)
+            settings.setRelayLastSeen(System.currentTimeMillis())
             update { it.copy(relayConfigured = true, relayReachable = true, lastError = null) }
             null
         } catch (t: Throwable) {
@@ -218,6 +220,7 @@ class Engine(private val graph: AppGraph) {
             }
             val mailbox = Wire.mailboxId(identity.dh.publicKey)
             try {
+                wakeRelayIfStale()
                 val result = graph.relay.poll(identity, mailbox, POLL_WAIT_MS, pollNonce)
                 pollNonce = result.nextNonce ?: pollNonce
                 val ids = ArrayList<String>(result.envelopes.size)
@@ -318,9 +321,62 @@ class Engine(private val graph: AppGraph) {
 
     // ------------------------------------------------------------------ maintenance
 
+    /** When the last "the relay may be asleep, try to wake it" attempt happened. */
+    @Volatile
+    private var lastWakeAttempt = 0L
+
+    /**
+     * Sends one cheap request when the relay has been quiet for a while.
+     *
+     * Free hosts put an idle instance to sleep (Render: 15 minutes without traffic, then up to a
+     * minute to wake). This is the traffic that stops that timer: a `GET /v1/health` every few
+     * minutes while Ping is running — the same request the settings screen uses to show whether
+     * the relay is up. It is deliberately outside the poll loop, so it keeps working while polling
+     * is backing off after an error.
+     */
+    private suspend fun keepRelayAwake() {
+        if (!settings.current.keepRelayAwake || !graph.relay.isConfigured()) return
+        if (!graph.relay.isStale()) return
+        try {
+            graph.relay.probe(wake = true)
+            settings.setRelayLastSeen(System.currentTimeMillis())
+            // `lastSyncAt` is left alone on purpose: it means "envelopes were collected", and a
+            // health request must not make the screen claim a sync that never happened.
+            update { it.copy(relayReachable = true, lastError = null) }
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            update { it.copy(relayReachable = false, lastError = t.message ?: "relay unreachable") }
+        }
+    }
+
+    /**
+     * Best effort: if the relay has not answered for a while it may be asleep, and the first real
+     * request would otherwise time out before the instance finishes booting.
+     */
+    private suspend fun wakeRelayIfStale() {
+        if (!graph.relay.isConfigured() || graph.relay.lastContactAt == 0L) return
+        if (!graph.relay.isStale()) return
+        // One attempt per keep-alive interval: a relay that stays down must not turn every poll
+        // round into another 90-second wait.
+        val attemptAt = System.currentTimeMillis()
+        if (attemptAt - lastWakeAttempt < RelayClient.KEEP_ALIVE_INTERVAL_MS) return
+        lastWakeAttempt = attemptAt
+        try {
+            graph.relay.probe(wake = true)
+            settings.setRelayLastSeen(System.currentTimeMillis())
+            update { it.copy(relayReachable = true, lastError = null) }
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            // The caller reports the failure of the real request.
+        }
+    }
+
     private suspend fun maintenanceLoop() {
         while (scope.isActive && running) {
             delay(30_000)
+            keepRelayAwake()
             try {
                 val now = System.currentTimeMillis()
                 val expired = graph.onDb { store.expireMessages(now) }

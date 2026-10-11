@@ -14,6 +14,8 @@ data class SettingsSnapshot(
     val displayName: String = "",
     val relayUrl: String = "",
     val allowInsecureRelay: Boolean = false,
+    val keepRelayAwake: Boolean = true,
+    val relayLastSeen: Long = 0L,
     val localNetworkEnabled: Boolean = true,
     val screenshotGuard: Boolean = false,
     val appLock: Boolean = false,
@@ -42,6 +44,8 @@ class Settings(context: Context) {
         displayName = prefs.getString("display_name", "") ?: "",
         relayUrl = prefs.getString("relay_url", DEFAULT_RELAY) ?: DEFAULT_RELAY,
         allowInsecureRelay = prefs.getBoolean("allow_insecure_relay", false),
+        keepRelayAwake = prefs.getBoolean("keep_relay_awake", true),
+        relayLastSeen = prefs.getLong("relay_last_seen", 0L),
         localNetworkEnabled = prefs.getBoolean("lan", true),
         screenshotGuard = prefs.getBoolean("screenshot_guard", false),
         appLock = prefs.getBoolean("app_lock", false),
@@ -68,6 +72,8 @@ class Settings(context: Context) {
             .putString("display_name", snapshot.displayName)
             .putString("relay_url", snapshot.relayUrl)
             .putBoolean("allow_insecure_relay", snapshot.allowInsecureRelay)
+            .putBoolean("keep_relay_awake", snapshot.keepRelayAwake)
+            .putLong("relay_last_seen", snapshot.relayLastSeen)
             .putBoolean("lan", snapshot.localNetworkEnabled)
             .putBoolean("screenshot_guard", snapshot.screenshotGuard)
             .putBoolean("app_lock", snapshot.appLock)
@@ -87,6 +93,8 @@ class Settings(context: Context) {
     fun setDisplayName(value: String) = update { it.copy(displayName = value.take(64)) }
     fun setRelayUrl(value: String) = update { it.copy(relayUrl = value.trim().trimEnd('/')) }
     fun setAllowInsecureRelay(value: Boolean) = update { it.copy(allowInsecureRelay = value) }
+    fun setKeepRelayAwake(value: Boolean) = update { it.copy(keepRelayAwake = value) }
+    fun setRelayLastSeen(time: Long) = update { it.copy(relayLastSeen = time) }
     fun setLocalNetworkEnabled(value: Boolean) = update { it.copy(localNetworkEnabled = value) }
     fun setScreenshotGuard(value: Boolean) = update { it.copy(screenshotGuard = value) }
     fun setAppLock(value: Boolean) = update { it.copy(appLock = value) }

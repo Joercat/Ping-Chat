@@ -1,7 +1,7 @@
 # Project status
 
-_Last updated: 2026-10-11 (fifth revision: **the pipeline is green** — unit tests pass and both
-APKs build)_
+_Last updated: 2026-10-11 (sixth revision: **the pipeline is green**, and the relay now deploys to
+Render's free plan in one click and keeps itself awake while Ping runs)_
 
 ## What is verified, and how
 
@@ -15,6 +15,8 @@ APKs build)_
 | Gradle wrapper | **usable** | `gradle-wrapper.jar` is a valid archive (33 entries, `GradleWrapperMain` present), `gradlew` is the genuine 8.x script, `distributionUrl` = gradle-8.7-bin.zip |
 | Android resources | **well-formed** | every XML parses, all vector drawables carry the four required attributes, `R.*` references resolve, adaptive icons cover API 26+ |
 | Android app compile | **builds** | `./gradlew assembleDebug testDebugUnitTest assembleRelease` in CI (run 38177242537, commit `261e134`) — every step green, `Ping-2.0.0.apk` + `Ping-2.0.0-debug.apk` uploaded as the `ping-apks` artifact |
+| Render blueprint (`render.yaml`) | **validated** | the Node relay started with Render's environment (`PORT`, `HOST`, `PING_DATA` on the ephemeral `/tmp`) answers `GET /v1/health` with `"storesMessagesOnDisk":false`; `node --check server.js` parses |
+| Settings persistence | **all 18 fields loaded and saved** | `python3 tools/static-checks/check_settings.py --strict` (with its own self-test) |
 | Static type checking | **clean** | `check_symbols.py`, `check_calls.py`, `check_types.py --strict`, `check_sql_schema.py` — all zero findings, and `check_types.py`'s own `--self-test` passes |
 
 The Android modules (`ui`, `service`, `di`, `engine`, `data`) were written without a compiler in
@@ -108,6 +110,33 @@ file itself parses with the service and both receivers in place.
 
 Found via the annotation mechanism described below — no log copying needed.
 
+### Run 6 (2026-10-11) — free-tier hosting: Render blueprint and a relay that stays awake
+
+Render's free plan runs the zero-dependency Node relay directly, so the repository now contains
+`render.yaml` (Dashboard → New + → Blueprint → Apply) and the relay got what a sleeping host needs:
+
+* **`RelayClient.probe(wake = true)`** waits up to 90 seconds for an answer, which is the cold start
+  a free instance needs. It replaced the 45-second read timeout for exactly the calls that may have
+  to wake somebody up: the first poll, the first registration, and the keep-alive itself. `probe()`
+  also checks the protocol version, so “connected” means the relay can actually be talked to.
+* **`keepRelayAwake()`** sends `GET /v1/health` whenever the relay has been quiet for ten minutes —
+  the traffic Render counts as activity, so a free instance never reaches its 15-minute spin-down
+  timer. It runs in the maintenance loop, independently of polling, so it keeps working while
+  polling backs off after an error. **Settings → Keep the relay awake** turns it off, and
+  *Relay last answered: …* shows that it works.
+* The honest limits are in `docs/DEPLOY.md`: 750 instance hours per workspace per month (~720 for a
+  service that is awake around the clock), a filesystem that is wiped on every deploy, and the fact
+  that Render may restart free instances at any time. None of it can cost a message: envelopes are
+  in RAM by design, so a restart can only drop an undelivered envelope, and the sender's outbox
+  re-sends it because messages are only marked delivered once the other phone acknowledges them.
+* Two more checker bugs were found and fixed while doing this, both of which had been hiding real
+  errors: `check_calls.py` skipped *every* uppercase-initial call (all Compose composables and all
+  constructors) and it dropped `private val` parameters from constructors; it now also prefers a
+  declaration in the same file and ignores names the file imports from elsewhere, which is what
+  keeps Compose's `Text` from being compared with `Wire.Payload.Text`. A new
+  `check_settings.py` covers the last silent-failure class: a setting added to the data class but
+  forgotten in `read()` or `persist()`.
+
 ### Run 5 (2026-10-11) — the first real Kotlin errors
 
 The manifest fix worked and the run reached `:app:compileDebugKotlin`. Six errors, all in
@@ -183,6 +212,7 @@ python3 tools/static-checks/check_sql_schema.py
 python3 tools/static-checks/check_symbols.py --strict
 python3 tools/static-checks/check_calls.py --strict
 python3 tools/static-checks/check_types.py --strict
+python3 tools/static-checks/check_settings.py --strict
 
 # the real build
 ./gradlew assembleDebug testDebugUnitTest

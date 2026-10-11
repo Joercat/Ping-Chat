@@ -1,0 +1,40 @@
+# Render blueprint — one-click hosting for the Ping relay.
+#
+# Render's free plan is the closest thing to "always there, never costs anything" for a relay:
+#
+#   * free web services spin down after 15 minutes without traffic and wake in about a minute
+#   * every workspace gets 750 free instance hours per calendar month
+#   * the filesystem is wiped on every deploy or restart
+#
+# All three are fine for this relay, and none of them can touch message privacy:
+#
+#   * messages live in RAM only, so a restart erases envelopes instead of losing data to disk.
+#     The sender's outbox notices the missing acknowledgement and re-sends (see docs/ARCHITECTURE.md)
+#   * the only thing written to disk is public pre-key material, and Ping re-publishes it
+#     automatically after a restart, because the file below is on the ephemeral /tmp
+#   * the app sends `GET /v1/health` every few minutes while it runs, which is exactly the traffic
+#     Render counts as activity, so the instance stays awake while your phone is on and the app is
+#     running (Settings → "Keep the relay awake"; off, and the relay simply takes a minute to wake)
+#
+# To deploy: Render Dashboard → New + → Blueprint → pick this repository → Apply.
+# Then copy the service URL (https://ping-relay-XXXX.onrender.com) into Ping's
+# Settings → Relay address.
+services:
+  - type: web
+    name: ping-relay
+    runtime: node
+    plan: free
+    region: virginia
+    rootDir: server/node
+    buildCommand: npm install --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /v1/health
+    autoDeploy: true
+    envVars:
+      # Public pre-key bundles only. /tmp is wiped on restart, and the app re-publishes them.
+      - key: PING_DATA
+        value: /tmp/ping-relay-keys.json
+      - key: HOST
+        value: 0.0.0.0
+      - key: NODE_VERSION
+        value: "20"

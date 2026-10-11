@@ -25,11 +25,15 @@ a kind byte and a length.
      open `https://github.com/Joercat/Ping-Chat/releases/download/latest/Ping-2.0.0.apk` directly.
 2. Open the APK on the phone and allow installing unknown apps once.
 3. Optional but recommended: deploy the relay (three minutes, free) and paste its URL into
-   **Settings → Relay address**. Without a relay, Ping still works on the same Wi-Fi.
+   **Settings → Relay address**. The quickest way is Render's free plan — Dashboard → **New +** →
+   **Blueprint** → pick this repository; `render.yaml` does the rest (`docs/DEPLOY.md` has the
+   walkthrough and the free-tier facts). Without a relay, Ping still works on the same Wi-Fi.
 
 Details, signing, `adb install` and troubleshooting: [`docs/BUILD.md`](docs/BUILD.md).
-Relay hosting options (Cloudflare free plan, a Raspberry Pi, a free VM, or nothing at all):
-[`docs/DEPLOY.md`](docs/DEPLOY.md).
+Relay hosting options (Render free plan, Cloudflare free plan, a Raspberry Pi, a free VM, or
+nothing at all): [`docs/DEPLOY.md`](docs/DEPLOY.md). A free host may sleep an idle instance; Ping
+keeps it awake with a small health request every ten minutes while it runs, and waits out a cold
+start when it does not.
 
 > GitHub is used **only to build the APK** — the app never talks to it, and it is not a hosting
 > platform. The relay runs on Cloudflare's free tier or on hardware you own, and the Node relay has

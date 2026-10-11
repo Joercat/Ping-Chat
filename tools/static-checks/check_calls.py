@@ -102,6 +102,13 @@ def parse_params(text: str) -> list[Param]:
         chunk = chunk.removeprefix("vararg ")
         # Annotations on parameters are ignored: @Foo val x: Int = 1
         chunk = re.sub(r"^(@\w+(?:\([^)]*\))?\s*)+", "", chunk)
+        # Visibility and modifiers are ignored too: `private val value: JsonValue.Obj` is a
+        # parameter like any other. Missing this made constructors look like they took no arguments.
+        chunk = re.sub(
+            r"^(?:(?:public|private|internal|protected|override|open|final|lateinit|vararg)\s+)*",
+            "",
+            chunk,
+        )
         name_match = re.match(r"(?:val |var |crossinline |noinline )*(\w+)\s*:", chunk)
         if not name_match:
             continue
@@ -157,6 +164,15 @@ def declarations(sources: dict[str, str]) -> dict[str, list[Signature]]:
             body, _ = balanced(raw, match.end() - 1)
             line = masked[:match.start()].count("\n") + 1
             add(match.group(1), parse_params(body), False, path, line)
+        # Secondary constructors: `class JsonObject(…) { constructor(text: String) : … }`. Without
+        # them a class looks like it takes fewer arguments than it does.
+        for match in re.finditer(r"\bconstructor\s*\(", masked):
+            owners = re.findall(r"\b(?:class|interface|object)\s+(\w+)", masked[:match.start()])
+            if not owners:
+                continue
+            body, _ = balanced(raw, match.end() - 1)
+            line = masked[:match.start()].count("\n") + 1
+            add(owners[-1], parse_params(body), False, path, line)
     return found
 
 
@@ -175,7 +191,9 @@ def check_file(path: str, source: str, package: str, all_decls: dict[str, list[S
     imported = imports_of(source)
     in_package = packages.get(package, set())
 
-    for match in re.finditer(r"(?<![\w.])([a-z]\w*)\s*\(", masked):
+    # Uppercase-initial names matter as much as lowercase ones: they are the constructors and
+    # Compose composables, which is where a renamed or mistyped named argument usually hides.
+    for match in re.finditer(r"(?<![\w.])([A-Za-z]\w*)\s*\(", masked):
         name = match.group(1)
         if name in KEYWORDS:
             continue
@@ -190,6 +208,17 @@ def check_file(path: str, source: str, package: str, all_decls: dict[str, list[S
             continue
         signatures = all_decls.get(name)
         if not signatures:
+            continue
+        # Private helpers with the same name live in several files (`SwitchRow`, `Section`, …), so a
+        # project-wide "must be unique" rule would give up on exactly the calls that matter. A
+        # declaration in this same file wins; only if there is none does the unique-shape rule apply.
+        here = os.path.basename(path)
+        local = [s for s in signatures if s.file == here]
+        if local:
+            signatures = local
+        elif name in imported:
+            # The file imports that simple name from a library — `Text` is Compose's composable,
+            # not `Wire.Payload.Text`. Judging it with a project signature invents errors.
             continue
         shapes = {(s.required, s.maximum, tuple(p.name for p in s.params)) for s in signatures}
         if len(shapes) != 1:

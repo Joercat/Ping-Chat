@@ -287,6 +287,8 @@ class PingController(val graph: AppGraph) {
 
     fun setAllowInsecureRelay(enabled: Boolean) = run { graph.settings.setAllowInsecureRelay(enabled) }
 
+    fun setKeepRelayAwake(enabled: Boolean) = run { graph.settings.setKeepRelayAwake(enabled) }
+
     fun defaultDisappearing(): Long = settings.value.defaultDisappearingSeconds
 
     fun setDefaultDisappearing(seconds: Long) = run { graph.settings.setDefaultDisappearing(seconds) }

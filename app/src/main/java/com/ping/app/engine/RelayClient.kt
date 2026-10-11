@@ -46,7 +46,35 @@ class RelayClient(private val settings: Settings) {
         .retryOnConnectionFailure(true)
         .build()
 
+    /**
+     * Same connections, but patient enough for a host that puts an idle instance to sleep.
+     *
+     * A free Render web service spins down after 15 minutes without traffic and takes up to a
+     * minute to come back; the normal timeouts (15 s connect / 45 s read) are far too short for that
+     * first request, so waking a sleeping relay goes through this client instead.
+     */
+    private val wakeClient: OkHttpClient by lazy {
+        client.newBuilder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(WAKE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /** When this client last had a successful answer from the relay, in `System.currentTimeMillis`. */
+    @Volatile
+    var lastContactAt: Long = 0L
+        private set
+
     companion object {
+        /** How long a request may wait for a sleeping relay to boot. Render allows ~1 minute. */
+        const val WAKE_TIMEOUT_MS = 90_000L
+        /**
+         * Traffic is sent at least this often while Ping runs, so an idle free-tier host never
+         * reaches its own spin-down timer (Render: 15 minutes without a request).
+         */
+        const val KEEP_ALIVE_INTERVAL_MS = 10 * 60 * 1000L
+
         /**
          * Validates a relay address. Returns null when it is acceptable, otherwise a reason.
          *
@@ -97,7 +125,12 @@ class RelayClient(private val settings: Settings) {
 
     fun isConfigured(): Boolean = base() != null
 
-    private fun execute(method: String, path: String, body: String? = null): String {
+    private fun execute(
+        method: String,
+        path: String,
+        body: String? = null,
+        http: OkHttpClient = client
+    ): String {
         val url = base() ?: throw RelayException("No relay configured", "no_relay", permanent = false)
         val builder = Request.Builder().url(url + path).header("accept", "application/json")
         when (method) {
@@ -106,9 +139,12 @@ class RelayClient(private val settings: Settings) {
             else -> throw RelayException("Unsupported method", "bad_method", permanent = true)
         }
         try {
-            client.newCall(builder.build()).execute().use { response ->
+            http.newCall(builder.build()).execute().use { response ->
                 val text = response.body?.string().orEmpty()
-                if (response.isSuccessful) return text
+                if (response.isSuccessful) {
+                    lastContactAt = System.currentTimeMillis()
+                    return text
+                }
                 val code = RelayApi.errorCode(text) ?: "http_${response.code}"
                 val permanent = response.code == 400 || response.code == 404 ||
                     (response.code == 401 && code == "bad_signature") || response.code == 413
@@ -121,7 +157,16 @@ class RelayClient(private val settings: Settings) {
         }
     }
 
-    fun health(): String = execute("GET", "/v1/health")
+    /**
+     * Asks the relay how it is. `wake = true` waits out a cold start instead of giving up, which is
+     * what a free host needs: it doubles as the keep-alive that stops the instance going to sleep.
+     */
+    fun health(wake: Boolean = false): String = execute("GET", "/v1/health", null,
+        if (wake) wakeClient else client)
+
+    /** True when the relay has not answered for longer than the keep-alive interval. */
+    fun isStale(now: Long = System.currentTimeMillis()): Boolean =
+        now - lastContactAt > KEEP_ALIVE_INTERVAL_MS
 
     /** Publishes the identity bundle and any un-published one-time pre-keys. */
     fun register(
@@ -186,9 +231,12 @@ class RelayClient(private val settings: Settings) {
         return RelayApi.parseChallenge(text)
     }
 
-    /** True when the relay answers and speaks our protocol version. */
-    fun probe(): String {
-        val text = health()
+    /**
+     * The relay answers and speaks our protocol version. `wake = true` gives a sleeping free-tier
+     * instance the time to boot instead of reporting it as unreachable.
+     */
+    fun probe(wake: Boolean = false): String {
+        val text = health(wake)
         val json = com.ping.app.core.protocol.JsonObject(text)
         val version = json.int("version")
         if (version != Wire.VERSION) throw RelayException("Relay speaks version $version, this app speaks ${Wire.VERSION}", "version_mismatch", permanent = true)

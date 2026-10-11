@@ -143,6 +143,18 @@ fun SettingsScreen(controller: PingController, onBack: () -> Unit) {
                 color = if (engineState.relayReachable) MaterialTheme.colorScheme.primary else TextSecondary
             )
             SwitchRow(
+                title = "Keep the relay awake",
+                subtitle = "Sends a small request every few minutes so a free host such as Render " +
+                    "does not put the relay to sleep. The relay only sees that a device is online.",
+                checked = settings.keepRelayAwake,
+                onChange = { controller.setKeepRelayAwake(it) }
+            )
+            Text(
+                text = "Relay last answered: " + lastSeenLabel(settings.relayLastSeen),
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary
+            )
+            SwitchRow(
                 title = "Allow plain HTTP for private addresses",
                 checked = settings.allowInsecureRelay,
                 onChange = { controller.setAllowInsecureRelay(it) }
@@ -283,15 +295,38 @@ private fun Section(title: String) {
     Spacer(Modifier.height(10.dp))
 }
 
+/** "not yet", "just now", "7 min ago", … for the relay status line. */
+private fun lastSeenLabel(lastSeen: Long): String {
+    if (lastSeen <= 0L) return "not yet"
+    val seconds = (System.currentTimeMillis() - lastSeen) / 1_000
+    return when {
+        seconds < 60 -> "just now"
+        seconds < 3_600 -> "${seconds / 60} min ago"
+        seconds < 86_400 -> "${seconds / 3_600} h ago"
+        else -> "${seconds / 86_400} d ago"
+    }
+}
+
 @Composable
-private fun SwitchRow(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun SwitchRow(
+    title: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+    subtitle: String? = null
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            if (subtitle != null) {
+                Spacer(Modifier.height(2.dp))
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            }
+        }
         Switch(checked = checked, onCheckedChange = onChange)
     }
 }
