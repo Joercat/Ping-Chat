@@ -11,3 +11,10 @@ local.properties
 gradle-wrapper.jar
 .DS_Store
 Thumbs.db
+
+# Build outputs / local
+.kotlin/
+app/schemas/
+*.apk
+*.aab
+out/
