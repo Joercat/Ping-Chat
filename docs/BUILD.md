@@ -89,6 +89,7 @@ as environment variables in CI (`KEYSTORE_PATH`, `KEYSTORE_PASSWORD`, `KEY_ALIAS
 
 | Symptom | Cause / fix |
 | --- | --- |
+| `sdkmanager … failed with exit code 1` in *Set up Android SDK* | the workflow is on `android-actions/setup-android@v3`, which still asks for the retired legacy `tools` package. Use the current `docs/ci/android-workflow.yml.template` (`@v4` + an explicit platform/build-tools install). |
 | `Unsupported class file major version` | wrong JDK — use JDK 17 |
 | `SDK location not found` | set `local.properties` or `ANDROID_HOME` |
 | `Execution failed for task ':app:checkDebugAarMetadata'` | run `./gradlew --refresh-dependencies` |

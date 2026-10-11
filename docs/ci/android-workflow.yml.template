@@ -7,9 +7,10 @@
 #
 # What it does:
 #   1. runs the crypto/protocol self-tests (hundreds of assertions, plain JUnit, no device)
-#   2. builds a debug APK and a release APK
-#   3. uploads both as artifacts
-#   4. on `main`, refreshes a rolling "latest" release you can download straight from the phone
+#   2. runs the live relay suite against a Node relay started on the runner
+#   3. builds a debug APK and a release APK
+#   4. uploads both as artifacts
+#   5. on `main`, refreshes a rolling "latest" release you can download straight from the phone
 
 name: Android CI
 
@@ -42,8 +43,23 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # NOTE: this must stay on @v4. @v3 runs `sdkmanager tools`, and Google retired the legacy
+      # `tools` package, so v3 fails with "Failed to find package 'tools'" / exit code 1 before any
+      # project step runs (android-actions/setup-android#537). v4 no longer requests it.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools"
+
+      # The runner image ships its own SDK and command-line tools; install exactly what this
+      # project compiles against instead of trusting an action's default package list. Accepting
+      # the licences is required for the platform/build-tools download to be allowed.
+      - name: Install the Android platform and build-tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
+          echo "sdk.dir=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}" > local.properties
+          sdkmanager --list_installed | sed -n '1,20p' || true
 
       - name: Set up Node (for the relay end-to-end suite)
         uses: actions/setup-node@v4
@@ -100,6 +116,17 @@ jobs:
           path: out/*.apk
           if-no-files-found: error
           retention-days: 90
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            app/build/reports/tests/**
+            app/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Publish rolling release (main only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
