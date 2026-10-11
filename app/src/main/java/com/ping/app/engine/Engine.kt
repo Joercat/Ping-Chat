@@ -1516,6 +1516,11 @@ class Engine(private val graph: AppGraph) {
                 graph.onDb { store.setReactions(payload.messageId, payload.emoji) }
                 graph.bumpRevision()
             }
+            // Group traffic never reaches this far: process() intercepts it and routes it to the
+            // group handlers, because it belongs to the group's conversation. A stray one is
+            // ignored rather than guessed at.
+            is Wire.Payload.GroupKey, is Wire.Payload.GroupMessage -> Unit
+
             is Wire.Payload.ConversationSettings -> {
                 graph.onDb { store.setConversationDisappearing(conversation.id, payload.disappearingSeconds) }
                 graph.bumpRevision()
@@ -1676,6 +1681,29 @@ class Engine(private val graph: AppGraph) {
             }
         }
     }
+
+    /**
+     * Decrypts an attachment to a file another app can read, for "open with…" and sharing.
+     *
+     * The copy lands in the app's private cache and is handed out through a FileProvider URI that
+     * grants read access to the chosen app only; [Engine.clearAttachmentExports] removes it again,
+     * and the app calls that on start.
+     */
+    suspend fun exportAttachment(record: AttachmentRecord): File? {
+        val bytes = readAttachment(record) ?: return null
+        return withContext(Dispatchers.IO) {
+            try {
+                graph.attachments.writeExport(record.fileName, bytes)
+            } catch (t: Throwable) {
+                null
+            } finally {
+                Bytes.wipe(bytes)
+            }
+        }
+    }
+
+    /** Removes every decrypted copy an earlier "open with…" or share left behind. */
+    fun clearAttachmentExports() = graph.attachments.clearExports()
 
     /** Number of bytes the ciphertext of every attachment occupies. */
     fun attachmentBytes(): Long = graph.attachments.totalBytes()

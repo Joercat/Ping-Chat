@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.Settings
@@ -146,7 +147,11 @@ private fun ConversationRow(view: ConversationView, onClick: () -> Unit) {
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Avatar(name = view.displayName, verified = view.contact?.verified == true)
+            Avatar(
+                name = view.displayName,
+                verified = view.contact?.verified == true,
+                group = view.group != null
+            )
             Spacer(Modifier.size(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -175,6 +180,7 @@ private fun ConversationRow(view: ConversationView, onClick: () -> Unit) {
                         view.contact?.blocked == true -> "Blocked"
                         view.conversation.preview.isNotBlank() ->
                             (if (view.conversation.lastMessageOutgoing) "You: " else "") + view.conversation.preview
+                        view.group != null -> "Group · ${view.group.memberCount + 1} members"
                         else -> "No messages yet"
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -200,7 +206,7 @@ private fun ConversationRow(view: ConversationView, onClick: () -> Unit) {
 }
 
 @Composable
-fun Avatar(name: String, verified: Boolean, size: Int = 46) {
+fun Avatar(name: String, verified: Boolean, size: Int = 46, group: Boolean = false) {
     Box(
         modifier = Modifier
             .size(size.dp)
@@ -208,12 +214,21 @@ fun Avatar(name: String, verified: Boolean, size: Int = 46) {
             .background(if (verified) PrimaryPurple.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = name.take(1).uppercase(),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = if (verified) MaterialTheme.colorScheme.onPrimary else TextSecondary
-        )
+        if (group) {
+            Icon(
+                Icons.Filled.Groups,
+                contentDescription = null,
+                tint = if (verified) MaterialTheme.colorScheme.onPrimary else TextSecondary,
+                modifier = Modifier.size((size * 0.55f).dp)
+            )
+        } else {
+            Text(
+                text = name.take(1).uppercase(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = if (verified) MaterialTheme.colorScheme.onPrimary else TextSecondary
+            )
+        }
     }
 }
 

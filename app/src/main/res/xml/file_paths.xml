@@ -3,6 +3,7 @@
 <paths>
     <files-path name="ping_files" path="ping_files/" />
     <cache-path name="thumbnails" path="thumbnails/" />
+    <cache-path name="ping_exports" path="exports/" />
     <external-files-path name="external_files" path="." />
     <external-cache-path name="external_cache" path="." />
 </paths>

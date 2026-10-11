@@ -1,6 +1,7 @@
 package com.ping.app.ui
 
 import android.net.Uri
+import java.io.File
 import com.ping.app.core.crypto.SafetyNumber
 import com.ping.app.core.protocol.ContactCard
 import com.ping.app.core.protocol.InviteCode
@@ -208,14 +209,29 @@ class PingController(val graph: AppGraph) {
     fun group(groupId: String): StateFlow<GroupRecord?> =
         graph.live("group:$groupId") { graph.onDb { graph.store.group(groupId) } }
 
-    fun createGroup(name: String, memberHashes: List<String>) = run {
-        graph.awaitStorage()
-        val group = graph.engine.createGroup(name, memberHashes)
-        graph.note(
-            "Created \"${group.name}\" with ${group.memberCount} " +
-                if (group.memberCount == 1) "member" else "members"
-        )
-        group
+    /**
+     * Creates a group and hands back the record once every member has their key.
+     *
+     * The callback form is what the screen needs: the work runs on the controller's scope (it waits
+     * for the database and seals one key per member), and the caller decides where to navigate.
+     */
+    fun createGroup(name: String, memberHashes: List<String>, onCreated: (GroupRecord?) -> Unit) {
+        scope.launch {
+            _busy.value = true
+            try {
+                graph.awaitStorage()
+                val group = graph.engine.createGroup(name, memberHashes)
+                graph.note(
+                    "Created \"${group.name}\" with ${group.memberCount} " +
+                        if (group.memberCount == 1) "member" else "members"
+                )
+                onCreated(group)
+            } catch (t: Throwable) {
+                _lastError.value = t.message ?: "Could not create the group"
+            } finally {
+                _busy.value = false
+            }
+        }
     }
 
     fun addGroupMember(groupId: String, contactHash: String) = run {
@@ -242,6 +258,21 @@ class PingController(val graph: AppGraph) {
         graph.awaitStorage()
         graph.engine.sendText(peerHash, text)
         graph.typing.value = graph.typing.value - peerHash
+    }
+
+    /**
+     * Decrypts an attachment to a file the system can hand to a viewer or a share target.
+     *
+     * The database read is marshalled onto the database thread like every other read; the ciphertext
+     * never leaves the app, and the decrypted copy lands in the private cache.
+     */
+    fun exportAttachment(attachmentId: String, onReady: (File?, AttachmentRecord?) -> Unit) {
+        scope.launch {
+            graph.awaitStorage()
+            val record = graph.onDb { graph.cryptoStore.attachment(attachmentId) }
+            val file = record?.let { graph.engine.exportAttachment(it) }
+            onReady(file, record)
+        }
     }
 
     fun sendAttachment(peerHash: String, uri: Uri, name: String, mime: String) = run {

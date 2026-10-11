@@ -42,6 +42,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -55,13 +61,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
+import androidx.core.content.FileProvider
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.ping.app.data.AttachmentRecord
 import com.ping.app.data.ChatMessage
 import com.ping.app.data.MessageStatus
 import com.ping.app.ui.PingController
+import java.io.File
 import com.ping.app.ui.theme.AccentGreen
 import com.ping.app.ui.theme.ErrorRed
 import com.ping.app.ui.theme.PrimaryPurple
@@ -90,6 +99,36 @@ fun ChatScreen(
     val contact by controller.contact(peerHash.orEmpty()).collectAsState(initial = null)
     val contacts by controller.contacts().collectAsState(initial = null)
     val me by controller.myHash().collectAsState(initial = null)
+    val context = LocalContext.current
+    var pendingSave by remember { mutableStateOf<Pair<File, String>?>(null) }
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { target ->
+        val pending = pendingSave
+        pendingSave = null
+        if (target != null && pending != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(target)?.use { out ->
+                    pending.first.inputStream().use { input -> input.copyTo(out) }
+                }
+            }.onFailure { Toast.makeText(context, "Could not save the file", Toast.LENGTH_SHORT).show() }
+        }
+    }
+    val onAttachmentAction: (AttachmentRecord, AttachmentAction) -> Unit = { record, action ->
+        when (action) {
+            AttachmentAction.OPEN -> exportAttachment(controller, record) { file ->
+                openAttachment(context, file, record.mimeType)
+            }
+            AttachmentAction.SHARE -> exportAttachment(controller, record) { file ->
+                shareAttachment(context, file, record.mimeType)
+            }
+            AttachmentAction.SAVE -> exportAttachment(controller, record) { file ->
+                pendingSave = file to record.fileName
+                runCatching { saveLauncher.launch(record.fileName) }
+                    .onFailure { Toast.makeText(context, "Could not save the file", Toast.LENGTH_SHORT).show() }
+            }
+        }
+    }
     val messages by controller.messages(conversationId).collectAsState(initial = null)
     val typingMap by controller.typing.collectAsState()
 
@@ -221,6 +260,7 @@ fun ChatScreen(
                         onDelete = { controller.deleteMessage(message.id) },
                         // In a group every incoming bubble says who wrote it: with one shared epoch
                         // key, "which member is this" is the only thing a reader cannot infer.
+                        onAttachmentAction = onAttachmentAction,
                         senderLabel = if (group != null && !message.outgoing) {
                             contacts.orEmpty().firstOrNull { it.hash == message.peerHash }
                                 ?.displayName?.takeIf { it.isNotBlank() }
@@ -279,7 +319,8 @@ private fun MessageBubble(
     onCopy: (String) -> Unit,
     onRetry: () -> Unit,
     onDelete: () -> Unit,
-    senderLabel: String? = null
+    senderLabel: String? = null,
+    onAttachmentAction: (AttachmentRecord, AttachmentAction) -> Unit = { _, _ -> }
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val outgoing = message.outgoing
@@ -315,7 +356,12 @@ private fun MessageBubble(
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                     if (message.attachmentId != null) {
-                        AttachmentBody(message = message, controller = controller, outgoing = outgoing)
+                        AttachmentBody(
+                            message = message,
+                            controller = controller,
+                            outgoing = outgoing,
+                            onAction = onAttachmentAction
+                        )
                     } else if (message.body == null) {
                         Text(
                             "This message was deleted",
@@ -393,8 +439,49 @@ private fun MessageBubble(
     }
 }
 
+/** What a tap or a long press on an attachment can ask for. */
+internal enum class AttachmentAction { OPEN, SAVE, SHARE }
+
+/**
+ * Decrypts an attachment and hands the copy to [then].
+ *
+ * The copy exists only because Android has no way to pass bytes to a viewer without one: it lives
+ * in the app's private cache, is reachable only through a FileProvider URI granted to the app the
+ * user picked, and is deleted on the next start.
+ */
+private fun exportAttachment(controller: PingController, record: AttachmentRecord, then: (File) -> Unit) {
+    controller.exportAttachment(record.id) { file, exported ->
+        if (file != null && exported != null) then(file)
+    }
+}
+
+private fun attachmentUri(context: Context, file: File): Uri =
+    FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
+
+private fun openAttachment(context: Context, file: File, mime: String) {
+    val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(attachmentUri(context, file), mime.ifBlank { "*/*" })
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    runCatching { context.startActivity(intent) }
+        .onFailure { Toast.makeText(context, "No app can open this file", Toast.LENGTH_SHORT).show() }
+}
+
+private fun shareAttachment(context: Context, file: File, mime: String) {
+    val send = Intent(Intent.ACTION_SEND)
+        .setType(mime.ifBlank { "*/*" })
+        .putExtra(Intent.EXTRA_STREAM, attachmentUri(context, file))
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    runCatching { context.startActivity(Intent.createChooser(send, "Share ${file.name}")) }
+        .onFailure { Toast.makeText(context, "Could not share this file", Toast.LENGTH_SHORT).show() }
+}
+
 @Composable
-private fun AttachmentBody(message: ChatMessage, controller: PingController, outgoing: Boolean) {
+private fun AttachmentBody(
+    message: ChatMessage,
+    controller: PingController,
+    outgoing: Boolean,
+    onAction: (AttachmentRecord, AttachmentAction) -> Unit
+) {
     val record by controller.attachment(message.attachmentId.orEmpty()).collectAsState(initial = null)
     val attachment = record
     if (attachment == null) {
@@ -419,18 +506,42 @@ private fun AttachmentBody(message: ChatMessage, controller: PingController, out
                     .fillMaxWidth()
                     .height(180.dp)
                     .clip(RoundedCornerShape(12.dp))
+                    .combinedClickable(
+                        onClick = { onAction(attachment, AttachmentAction.OPEN) },
+                        onLongClick = { onAction(attachment, AttachmentAction.SAVE) }
+                    )
             )
         } else {
-            AttachmentChip(attachment = attachment, outgoing = outgoing)
+            AttachmentChip(
+                attachment = attachment,
+                outgoing = outgoing,
+                onAction = { onAction(attachment, it) }
+            )
         }
     } else {
-        AttachmentChip(attachment = attachment, outgoing = outgoing)
+        AttachmentChip(
+            attachment = attachment,
+            outgoing = outgoing,
+            onAction = { onAction(attachment, it) }
+        )
     }
 }
 
 @Composable
-private fun AttachmentChip(attachment: AttachmentRecord, outgoing: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+private fun AttachmentChip(
+    attachment: AttachmentRecord,
+    outgoing: Boolean,
+    onAction: (AttachmentAction) -> Unit
+) {
+    var menu by remember { mutableStateOf(false) }
+    Box {
+    Row(
+        modifier = Modifier.combinedClickable(
+            onClick = { if (attachment.complete) onAction(AttachmentAction.OPEN) },
+            onLongClick = { if (attachment.complete) menu = true }
+        ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Icon(
             Icons.Filled.InsertDriveFile,
             contentDescription = null,
@@ -449,11 +560,35 @@ private fun AttachmentChip(attachment: AttachmentRecord, outgoing: Boolean) {
             Text(
                 text = when {
                     attachment.status == 2 -> "Could not be verified"
-                    attachment.complete -> "${attachment.size / 1024} KB"
+                    attachment.complete -> "${attachment.size / 1024} KB · tap to open"
                     else -> "${attachment.receivedChunks}/${attachment.chunkCount} received"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = if (outgoing) Color.White.copy(alpha = 0.8f) else TextSecondary
+            )
+        }
+    }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(
+                text = { Text("Open") },
+                onClick = {
+                    menu = false
+                    onAction(AttachmentAction.OPEN)
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Save to phone") },
+                onClick = {
+                    menu = false
+                    onAction(AttachmentAction.SAVE)
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Share") },
+                onClick = {
+                    menu = false
+                    onAction(AttachmentAction.SHARE)
+                }
             )
         }
     }

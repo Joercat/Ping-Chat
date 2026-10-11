@@ -129,8 +129,9 @@ fun NewGroupScreen(controller: PingController, onBack: () -> Unit, onCreated: (S
             }
             Button(
                 onClick = {
-                    val created = runCatching { controller.createGroup(name, selected.toList()) }.getOrNull()
-                    if (created != null) onCreated(created.id)
+                    controller.createGroup(name, selected.toList()) { group ->
+                        if (group != null) onCreated(group.id)
+                    }
                 },
                 enabled = !busy && selected.isNotEmpty() && name.isNotBlank(),
                 modifier = Modifier

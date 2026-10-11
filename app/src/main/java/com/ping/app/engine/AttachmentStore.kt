@@ -19,7 +19,35 @@ class AttachmentStore(context: Context) {
 
     private val directory = File(context.noBackupFilesDir, "attachments").apply { mkdirs() }
 
+    /**
+     * Where decrypted copies live when another app asks for a file.
+     *
+     * Ciphertext is the only thing this app keeps in its own storage; a copy in the clear exists
+     * only because Android has no way to hand a viewer or a share target a byte stream without one.
+     * It goes to the app's private cache (invisible to other apps, wiped by the system whenever it
+     * needs the space) and [clearExports] deletes every copy on the next start, so nothing outlives
+     * the app run that made it.
+     */
+    private val exports = File(context.cacheDir, "exports").apply { mkdirs() }
+
     fun fileFor(attachmentId: String): File = File(directory, "$attachmentId.enc")
+
+    /** Writes a decrypted copy for an external viewer; returns the file and its (unique) name. */
+    fun writeExport(fileName: String, bytes: ByteArray): File {
+        exports.mkdirs()
+        val safe = fileName.replace(Regex("[^A-Za-z0-9._ -]"), "_").take(80).ifBlank { "attachment" }
+        val file = File(exports, safe)
+        // Seed the name with the attachment id's first characters only when it is already taken
+        // (two files really can share a name), so the common case keeps the sender's filename.
+        val target = if (file.exists()) File(exports, "${System.nanoTime()}-$safe") else file
+        target.writeBytes(bytes)
+        return target
+    }
+
+    /** Deletes every decrypted copy. Called on start; nothing in the clear survives a restart. */
+    fun clearExports() {
+        exports.listFiles()?.forEach { it.delete() }
+    }
 
     /**
      * Verifies one incoming chunk against its position, then stores it exactly as it arrived.

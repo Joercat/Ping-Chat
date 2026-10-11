@@ -20,6 +20,9 @@ class PingApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         graph = AppGraph(this)
+        // Decrypted copies exist only so a viewer or a share target can read the file; they never
+        // outlive the app run that made them.
+        graph.attachments.clearExports()
         Notifications.createChannels(this)
         // Bring the pipe back up on its own after a reboot or an update. The service is
         // best-effort: if the system refuses to start it in the background, the app still

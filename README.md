@@ -51,6 +51,15 @@ start when it does not.
 * **Local first** — the whole conversation lives in an SQLCipher database whose key is sealed by
   the phone's secure hardware, with sensitive columns sealed a second time. Nothing is backed up
   off the device (`allowBackup=false`), and the panic wipe really does delete the keys.
+* **Group chats, same guarantee** — a group gets one key per epoch, and each member receives it
+  inside their own encrypted one-to-one chat, so the relay sees ordinary sealed envelopes and never
+  learns a group exists. Every message is signed by its sender, bound to the group and epoch, and
+  rejected if it is replayed or forged; adding or removing a member rotates the key, so a newcomer
+  cannot read the backlog and a leaver cannot read on.
+* **Files that actually arrive** — attachments are encrypted in 64 KiB chunks, sent through a
+  persistent outbox that survives restarts and resumes where it stopped, and they can be tapped to
+  open in any viewer, saved to the phone, or shared onwards. Only ciphertext is ever written to the
+  app's own storage.
 * **Nice to use** — QR contact exchange, disappearing messages, reactions, edit/delete, read
   receipts and typing indicators (all optional), reply straight from a notification, an
   attachment picker, an optional biometric app lock, and a screenshot guard.
@@ -127,6 +136,12 @@ PING_RELAY=http://127.0.0.1:8080 tools/selftest/run.sh --relay    # + 49 live re
 * Deleting a contact or conversation deletes local data. There is no cloud copy to delete.
 * No app is immune to a compromised phone; Ping keeps its keys in the Android Keystore and
   refuses to read a database that was restored from a backup, which covers the common cases.
+* A group's epoch key is shared by everybody in it: whoever holds a device that is in the group can
+  read the epochs it took part in. Rotating the key on every membership change is what keeps that
+  bounded — it is the same trade-off other group messaging systems make.
+* "Open with…" and sharing hand a decrypted copy to another app, because Android has no way to give
+  one bytes without a file. That copy lives in Ping's private cache, is readable only by the app the
+  user picked, and is deleted the next time Ping starts.
 
 ## Licence
 
