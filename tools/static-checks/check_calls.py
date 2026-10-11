@@ -138,6 +138,7 @@ def declarations(sources: dict[str, str]) -> dict[str, list[Signature]]:
         found.setdefault(name, []).append(Signature(name, params, suspend, os.path.basename(path), line))
 
     for path, source in sources.items():
+        raw = source
         masked = mask_literals(source)
         for match in re.finditer(
             r"^[ \t]*(?:@\w+(?:\([^)]*\))?[ \t]*\n[ \t]*)*"
@@ -146,11 +147,14 @@ def declarations(sources: dict[str, str]) -> dict[str, list[Signature]]:
             masked,
             re.M,
         ):
-            body, _ = balanced(masked, match.end() - 1)
+            # Offsets are identical in the masked and raw source, so the parameter list is read
+            # from the raw text: a default value like = "" is blanked out by the mask, which would
+            # otherwise look like a required parameter.
+            body, _ = balanced(raw, match.end() - 1)
             line = masked[:match.start()].count("\n") + 1
             add(match.group("name"), parse_params(body), "suspend" in match.group("mods"), path, line)
         for match in re.finditer(r"^[ \t]*(?:data |sealed |abstract |open |value |inline )*class\s+(\w+)\s*(?:<[^>]*>)?\s*\(", masked, re.M):
-            body, _ = balanced(masked, match.end() - 1)
+            body, _ = balanced(raw, match.end() - 1)
             line = masked[:match.start()].count("\n") + 1
             add(match.group(1), parse_params(body), False, path, line)
     return found
