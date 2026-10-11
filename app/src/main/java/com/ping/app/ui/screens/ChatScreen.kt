@@ -78,13 +78,18 @@ fun ChatScreen(
     conversationId: String,
     onBack: () -> Unit,
     onOpenContact: (String) -> Unit,
+    onOpenGroupInfo: (String) -> Unit,
     onPickAttachment: () -> Unit,
     pickedAttachment: PickedAttachment?,
     onPickedAttachmentHandled: () -> Unit
 ) {
     val conversation by controller.conversation(conversationId).collectAsState(initial = null)
     val peerHash = conversation?.peerHash
+    val groupId = conversation?.groupId
+    val group by controller.group(groupId.orEmpty()).collectAsState(initial = null)
     val contact by controller.contact(peerHash.orEmpty()).collectAsState(initial = null)
+    val contacts by controller.contacts().collectAsState(initial = null)
+    val me by controller.myHash().collectAsState(initial = null)
     val messages by controller.messages(conversationId).collectAsState(initial = null)
     val typingMap by controller.typing.collectAsState()
 
@@ -138,7 +143,7 @@ fun ChatScreen(
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                contact?.displayName ?: "Unknown",
+                                group?.name ?: contact?.displayName ?: "Unknown",
                                 style = MaterialTheme.typography.titleMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -153,11 +158,17 @@ fun ChatScreen(
                                 )
                             }
                         }
-                        val typing = peerHash != null && (typingMap[peerHash] ?: 0L) > System.currentTimeMillis() - 6_000
+                        val typing = group == null && peerHash != null &&
+                            (typingMap[peerHash] ?: 0L) > System.currentTimeMillis() - 6_000
                         val disappearing = conversation?.disappearingSeconds ?: 0L
-                        if (typing || disappearing > 0) {
+                        val memberLabel = group?.let { "${it.memberCount + 1} members · end-to-end encrypted" }
+                        if (typing || disappearing > 0 || memberLabel != null) {
                             Text(
-                                text = if (typing) "typing…" else "Disappearing messages",
+                                text = when {
+                                    typing -> "typing…"
+                                    memberLabel != null -> memberLabel
+                                    else -> "Disappearing messages"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (typing) AccentGreen else TextSecondary
                             )
@@ -175,8 +186,13 @@ fun ChatScreen(
                                 .size(18.dp)
                         )
                     }
-                    IconButton(onClick = { peerHash?.let(onOpenContact) }) {
-                        Icon(Icons.Filled.Info, contentDescription = "Contact details")
+                    IconButton(
+                        onClick = {
+                            val id = groupId
+                            if (id != null) onOpenGroupInfo(id) else peerHash?.let(onOpenContact)
+                        }
+                    ) {
+                        Icon(Icons.Filled.Info, contentDescription = "Details")
                     }
                 }
             )
@@ -202,8 +218,28 @@ fun ChatScreen(
                         controller = controller,
                         onCopy = { text -> clipboard.setText(AnnotatedString(text)) },
                         onRetry = { controller.retryMessage(message.id) },
-                        onDelete = { controller.deleteMessage(message.id) }
+                        onDelete = { controller.deleteMessage(message.id) },
+                        // In a group every incoming bubble says who wrote it: with one shared epoch
+                        // key, "which member is this" is the only thing a reader cannot infer.
+                        senderLabel = if (group != null && !message.outgoing) {
+                            contacts.orEmpty().firstOrNull { it.hash == message.peerHash }
+                                ?.displayName?.takeIf { it.isNotBlank() }
+                                ?: message.peerHash.take(8)
+                        } else {
+                            null
+                        }
                     )
+                }
+            }
+
+            val composerSend: () -> Unit = {
+                val text = draft
+                draft = ""
+                val id = groupId
+                if (id != null) {
+                    controller.sendGroupText(id, text)
+                } else if (peerHash != null) {
+                    controller.sendText(peerHash, text)
                 }
             }
 
@@ -211,7 +247,7 @@ fun ChatScreen(
                 draft = draft,
                 onDraftChange = { value ->
                     draft = value
-                    if (peerHash != null && value.isNotEmpty()) {
+                    if (groupId == null && peerHash != null && value.isNotEmpty()) {
                         val now = System.currentTimeMillis()
                         if (now - lastTypingSent > 3_000) {
                             lastTypingSent = now
@@ -220,11 +256,8 @@ fun ChatScreen(
                     }
                 },
                 onSend = {
-                    val peer = peerHash ?: return@Composer
-                    val text = draft
-                    draft = ""
-                    controller.sendText(peer, text)
-                    controller.stopTyping(peer)
+                    composerSend()
+                    peerHash?.let { controller.stopTyping(it) }
                 },
                 onAttach = onPickAttachment
             )
@@ -245,17 +278,26 @@ private fun MessageBubble(
     controller: PingController,
     onCopy: (String) -> Unit,
     onRetry: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    senderLabel: String? = null
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val outgoing = message.outgoing
     val bubbleColor = if (outgoing) SentBubble else ReceivedBubble
     val textColor = if (outgoing) Color.White else MaterialTheme.colorScheme.onSurface
 
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start
+        horizontalAlignment = if (outgoing) Alignment.End else Alignment.Start
     ) {
+        if (senderLabel != null) {
+            Text(
+                text = senderLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = AccentGreen,
+                modifier = Modifier.padding(start = 6.dp, bottom = 2.dp)
+            )
+        }
         Box {
             Surface(
                 modifier = Modifier

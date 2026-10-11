@@ -53,8 +53,96 @@ object CryptoCoreTest {
         ratchetPersistence()
         ratchetPostCompromise()
         safetyNumbers()
+        groupSenderKeys()
         ProtocolTest.runAll()
         return failures.size
+    }
+
+    // ------------------------------------------------------------------ group sender keys
+
+    private fun groupSenderKeys() {
+        val alice = IdentityKeyPair.generate()
+        val bob = IdentityKeyPair.generate()
+        val groupId = GroupCrypto.randomGroupId()
+        val epochKey = GroupCrypto.EpochKey(groupId, 1, GroupCrypto.randomEpochKey())
+        val plaintext = "hello group".toByteArray()
+
+        val counter = GroupCrypto.nextCounter(0L, 1_000L)
+        val sealed = GroupCrypto.seal(epochKey, alice, counter, plaintext)
+
+        // Every member holds the same epoch key, so every member can open what Alice sealed —
+        // including Alice herself, and Bob, who has entirely different identity keys.
+        check(
+            GroupCrypto.open(epochKey, sealed).contentEquals(plaintext),
+            "the sender can open their own group message"
+        )
+        check(!bob.signing.publicKey.contentEquals(alice.signing.publicKey), "the two members differ")
+        val bobsCopy = GroupCrypto.EpochKey(groupId, 1, epochKey.key.copyOf())
+        check(
+            GroupCrypto.open(bobsCopy, sealed).contentEquals(plaintext),
+            "another member with the same epoch key opens the message"
+        )
+        check(
+            sealed.senderSigningKey.contentEquals(alice.signing.publicKey),
+            "the blob carries the sender's signing key"
+        )
+
+        // A tampered ciphertext must fail: the ciphertext is authenticated, and the tag covers the
+        // header through the AAD.
+        val tampered = sealed.encode()
+        tampered[tampered.size - 1] = (tampered[tampered.size - 1].toInt() xor 1).toByte()
+        expectThrows<AuthenticationFailedException>("a flipped ciphertext bit is rejected") {
+            val decoded = GroupCrypto.Sealed.decode(tampered)
+            GroupCrypto.open(epochKey, decoded)
+        }
+
+        // Claiming somebody else's identity does not survive the signature check: the blob is
+        // signed with Alice's key, so putting Bob's key in the header breaks verification — which is
+        // exactly what the engine relies on when it compares the key against the contact record.
+        val forgedHeader = GroupCrypto.Sealed(
+            groupId = sealed.groupId,
+            epoch = sealed.epoch,
+            counter = sealed.counter,
+            senderSigningKey = bob.signing.publicKey,
+            blob = sealed.blob
+        )
+        expectThrows<AuthenticationFailedException>("a swapped sender key is rejected") {
+            GroupCrypto.open(epochKey, forgedHeader)
+        }
+
+        // A key from another epoch cannot open this message.
+        val nextEpoch = GroupCrypto.EpochKey(groupId, 2, GroupCrypto.randomEpochKey())
+        expectThrows<WireFormatException>("an epoch mismatch is rejected") {
+            GroupCrypto.open(nextEpoch, sealed)
+        }
+        // Another group's key cannot either, even in the same epoch.
+        val otherGroup = GroupCrypto.EpochKey(GroupCrypto.randomGroupId(), 1, epochKey.key.copyOf())
+        expectThrows<WireFormatException>("a group id mismatch is rejected") {
+            GroupCrypto.open(otherGroup, sealed)
+        }
+
+        // Counters never repeat, which is what keeps (key, nonce) pairs unique: a restart or a clock
+        // that jumps backwards must not hand out a counter that was already used.
+        checkEquals(100L, GroupCrypto.nextCounter(0L, 100L), "a fresh counter follows the clock")
+        checkEquals(101L, GroupCrypto.nextCounter(100L, 100L), "a counter never repeats within a millisecond")
+        checkEquals(101L, GroupCrypto.nextCounter(100L, 1L), "a counter survives a clock that goes backwards")
+        val first = GroupCrypto.seal(epochKey, alice, 5L, plaintext)
+        val second = GroupCrypto.seal(epochKey, alice, 6L, plaintext)
+        check(
+            !GroupCrypto.messageKey(epochKey.key, alice.signing.publicKey, 5L)
+                .contentEquals(GroupCrypto.messageKey(epochKey.key, alice.signing.publicKey, 6L)),
+            "each counter gets its own key"
+        )
+        check(!first.blob.contentEquals(second.blob), "two counters produce different ciphertexts")
+
+        // Out of order is fine: the key depends on the counter, not on a chain position.
+        val late = GroupCrypto.seal(epochKey, alice, 99L, "late".toByteArray())
+        val early = GroupCrypto.seal(epochKey, alice, 7L, "early".toByteArray())
+        check(
+            GroupCrypto.open(epochKey, late).contentEquals("late".toByteArray()) &&
+                GroupCrypto.open(epochKey, early).contentEquals("early".toByteArray()),
+            "messages open regardless of the order they arrive in"
+        )
     }
 
     // ------------------------------------------------------------------ encodings

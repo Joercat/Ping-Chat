@@ -5,6 +5,7 @@ import com.ping.app.core.crypto.Aead
 import com.ping.app.core.crypto.AttachmentCrypto
 import com.ping.app.core.crypto.AuthenticationFailedException
 import com.ping.app.core.crypto.Bytes
+import com.ping.app.core.crypto.GroupCrypto
 import com.ping.app.core.crypto.IdentityKeyPair
 import com.ping.app.core.crypto.PreKeyBundle
 import com.ping.app.core.crypto.RatchetSession
@@ -16,6 +17,7 @@ import com.ping.app.core.protocol.Wire
 import com.ping.app.data.AttachmentRecord
 import com.ping.app.data.ChatMessage
 import com.ping.app.data.Contact
+import com.ping.app.data.GroupRecord
 import com.ping.app.data.Conversation
 import com.ping.app.data.MessageStatus
 import com.ping.app.di.AppGraph
@@ -1036,6 +1038,292 @@ class Engine(private val graph: AppGraph) {
         return delivered
     }
 
+    // ------------------------------------------------------------------ groups
+
+    /** This device's own contact hash, so a group message can show who wrote it. */
+    suspend fun selfHash(): String? {
+        val identity = graph.identity.keyPair() ?: return null
+        return Bytes.toHex(Bytes.sha256(identity.signing.publicKey).copyOfRange(0, 16))
+    }
+
+    /**
+     * Creates a group and hands every member the first epoch key.
+     *
+     * The key travels inside each member's ordinary pairwise ratchet, one envelope each: the relay
+     * sees the same shape of traffic as a direct message and learns nothing about the group.
+     */
+    suspend fun createGroup(name: String, memberHashes: List<String>): GroupRecord {
+        val cleaned = memberHashes.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (cleaned.isEmpty()) throw IllegalArgumentException("A group needs at least one contact")
+        val members = graph.onDb { cleaned.filter { store.contact(it) != null } }
+        if (members.isEmpty()) throw IllegalArgumentException("None of those contacts are known")
+
+        val id = Bytes.toBase64Url(GroupCrypto.randomGroupId())
+        val record = graph.onDb {
+            store.saveGroup(
+                id = id,
+                name = name.trim().take(Wire.MAX_NAME_BYTES).ifBlank { "Group" },
+                epoch = 1,
+                epochKey = GroupCrypto.randomEpochKey(),
+                members = members,
+                createdAt = System.currentTimeMillis()
+            )
+            store.ensureGroupConversation(id)
+            store.group(id) ?: throw IllegalStateException("the group was not stored")
+        }
+        graph.bumpRevision()
+        distributeGroupKey(record, members)
+        return record
+    }
+
+    /**
+     * Adds somebody. Everyone gets a **new** epoch key, so the newcomer cannot read anything that
+     * was said before they joined and nobody has to be trusted with re-keying by hand.
+     */
+    suspend fun addGroupMember(groupId: String, contactHash: String) {
+        val record = graph.onDb { store.group(groupId) } ?: throw IllegalArgumentException("Unknown group")
+        graph.onDb { store.contact(contactHash) } ?: throw IllegalArgumentException("Unknown contact")
+        if (contactHash in record.members) return
+        rotateGroup(groupId, record.members + contactHash, record)
+    }
+
+    /**
+     * Leaves a group. The key is rotated for everybody who stays (so the leaver cannot read on) and
+     * the leaver's own copy is deleted, along with the local conversation and its messages.
+     */
+    suspend fun leaveGroup(groupId: String) {
+        val record = graph.onDb { store.group(groupId) } ?: return
+        val me = selfHash()
+        val remaining = record.members.filter { it != me }
+        if (remaining.isNotEmpty()) {
+            val rotated = rotateGroup(groupId, remaining, record, deleteAfter = true)
+            if (rotated != null) return
+        }
+        graph.onDb {
+            store.deleteGroup(groupId)
+            store.conversationForPeer("group:$groupId")?.let { store.deleteConversation(it) }
+        }
+        graph.bumpRevision()
+    }
+
+    /** Removes somebody else and rotates the key; used by the group screen. */
+    suspend fun removeGroupMember(groupId: String, contactHash: String) {
+        val record = graph.onDb { store.group(groupId) } ?: return
+        val remaining = record.members.filter { it != contactHash }
+        if (remaining.isEmpty()) {
+            graph.onDb { store.deleteGroup(groupId) }
+            graph.bumpRevision()
+            return
+        }
+        rotateGroup(groupId, remaining, record)
+    }
+
+    private suspend fun rotateGroup(
+        groupId: String,
+        members: List<String>,
+        record: GroupRecord,
+        deleteAfter: Boolean = false
+    ): GroupRecord? {
+        val key = GroupCrypto.randomEpochKey()
+        val updated = graph.onDb {
+            // `saveGroup` replaces the roster; the epoch only ever moves forward.
+            store.saveGroup(
+                id = groupId,
+                name = record.name,
+                epoch = record.epoch + 1,
+                epochKey = key,
+                members = members,
+                createdAt = record.createdAt
+            )
+            store.group(groupId)
+        } ?: return null
+        graph.bumpRevision()
+        distributeGroupKey(updated, members)
+        if (deleteAfter) {
+            graph.onDb {
+                store.deleteGroup(groupId)
+                store.conversationForPeer("group:$groupId")?.let { store.deleteConversation(it) }
+            }
+            graph.bumpRevision()
+        }
+        return updated
+    }
+
+    /** Sends the current epoch key to every listed member, over each one's pairwise ratchet. */
+    private suspend fun distributeGroupKey(record: GroupRecord, members: List<String>) {
+        val groupId = try {
+            Bytes.fromBase64Url(record.id)
+        } catch (t: Throwable) {
+            return
+        }
+        for (member in members) {
+            val contact = graph.onDb { store.contact(member) } ?: continue
+            val payload = Wire.Payload.GroupKey(
+                groupId = groupId,
+                epoch = record.epoch,
+                key = record.epochKey,
+                name = record.name,
+                members = record.members
+            )
+            val conversationId = graph.onDb { store.ensureGroupConversation(record.id) }.id
+            try {
+                if (!deliver(contact, payload)) {
+                    graph.onDb {
+                        cryptoStore.enqueueOutbox(
+                            "groupkey:${record.id}:${record.epoch}:$member",
+                            contact.hash,
+                            conversationId,
+                            payload.encode(),
+                            System.currentTimeMillis()
+                        )
+                    }
+                }
+            } catch (t: Throwable) {
+                // The outbox above only covers a refusal; a thrown error is retried next rotation.
+            }
+        }
+    }
+
+    /** Sends a text message to a group: one seal, one envelope per member. */
+    suspend fun sendGroupText(groupId: String, text: String): ChatMessage {
+        val identity = graph.identity.keyPair() ?: throw IllegalStateException("Ping has no identity yet")
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) throw IllegalArgumentException("Cannot send an empty message")
+        val record = graph.onDb { store.group(groupId) } ?: throw IllegalArgumentException("Unknown group")
+        val conversation = graph.onDb { store.ensureGroupConversation(groupId) }
+        val me = selfHash().orEmpty()
+        val now = System.currentTimeMillis()
+
+        val epoch = GroupCrypto.EpochKey(Bytes.fromBase64Url(record.id), record.epoch, record.epochKey)
+        // The counter must never repeat for the same epoch key: that would reuse a key and a nonce.
+        val counter = graph.onDb {
+            val next = GroupCrypto.nextCounter(store.groupHighestCounter(groupId, me))
+            store.setGroupHighestCounter(groupId, me, next)
+            next
+        }
+        val inner = Wire.Payload.Text(trimmed, null, now).encode()
+        val blob = GroupCrypto.seal(epoch, identity, counter, inner).encode()
+        val groupIdBytes = Bytes.fromBase64Url(record.id)
+
+        val message = ChatMessage(
+            id = Wire.randomEnvelopeId(),
+            conversationId = conversation.id,
+            peerHash = me,
+            outgoing = true,
+            kind = 1,
+            body = trimmed,
+            replyToId = null,
+            createdAt = now,
+            sentAt = null,
+            deliveredAt = null,
+            readAt = null,
+            status = MessageStatus.PENDING,
+            attachmentId = null,
+            expiresAt = expiryFor(conversation.disappearingSeconds, now),
+            editedAt = null,
+            reactions = null
+        )
+        graph.onDb { store.insertMessage(message) }
+        graph.bumpRevision()
+
+        var delivered = false
+        var firstFailure: Contact? = null
+        for (member in record.members) {
+            val contact = graph.onDb { store.contact(member) } ?: continue
+            val ok = try {
+                deliver(contact, Wire.Payload.GroupMessage(groupIdBytes, blob))
+            } catch (t: Throwable) {
+                false
+            }
+            if (ok) {
+                delivered = true
+            } else if (firstFailure == null) {
+                firstFailure = contact
+            }
+        }
+        if (delivered) {
+            markSent(message.id, System.currentTimeMillis())
+        } else if (firstFailure != null) {
+            // Keep trying in the background; the outbox re-sends to whoever refused.
+            graph.onDb {
+                cryptoStore.enqueueOutbox(
+                    message.id, firstFailure.hash, conversation.id,
+                    Wire.Payload.GroupMessage(groupIdBytes, blob).encode(), System.currentTimeMillis()
+                )
+            }
+            for (member in record.members) {
+                val contact = graph.onDb { store.contact(member) } ?: continue
+                if (contact.hash == firstFailure.hash) continue
+                graph.onDb {
+                    cryptoStore.enqueueOutbox(
+                        "group:${message.id}:${contact.hash}", contact.hash, conversation.id,
+                        Wire.Payload.GroupMessage(groupIdBytes, blob).encode(), System.currentTimeMillis()
+                    )
+                }
+            }
+        }
+        return graph.onDb { store.message(message.id) } ?: message
+    }
+
+    /** A member handed us an epoch key: store the group (never lowering the epoch) and its chat. */
+    private suspend fun handleGroupKey(contact: Contact, payload: Wire.Payload.GroupKey) {
+        val groupId = Bytes.toBase64Url(payload.groupId)
+        // The sender must be part of the roster they are announcing, and the roster must include us.
+        val me = selfHash()
+        if (me != null && payload.members.isNotEmpty() && me !in payload.members) return
+        graph.onDb {
+            store.ensureGroup(
+                id = groupId,
+                name = payload.name,
+                epoch = payload.epoch,
+                epochKey = payload.key,
+                members = payload.members.filter { it.isNotBlank() }.distinct(),
+                createdAt = System.currentTimeMillis()
+            )
+            store.ensureGroupConversation(groupId)
+        }
+        graph.bumpRevision()
+        graph.note("Added to ${payload.name.take(Wire.MAX_NAME_BYTES)}")
+    }
+
+    /**
+     * A sealed group message.
+     *
+     * Four things are checked before anything is stored: the blob names the peer it came from (so a
+     * member cannot post as somebody else), the epoch is the current one, the counter is higher than
+     * anything seen from that sender (so a relay or a member cannot replay), and the sender's
+     * signature over the header and ciphertext verifies inside [GroupCrypto.open].
+     */
+    private suspend fun handleGroupMessage(contact: Contact, payload: Wire.Payload.GroupMessage) {
+        val groupId = Bytes.toBase64Url(payload.groupId)
+        val record = graph.onDb { store.group(groupId) } ?: return
+        val sealed = try {
+            GroupCrypto.Sealed.decode(payload.blob)
+        } catch (t: Throwable) {
+            return
+        }
+        if (!sealed.senderSigningKey.contentEquals(contact.signingKey)) return
+        if (sealed.epoch != record.epoch) return
+        val highest = graph.onDb { store.groupHighestCounter(groupId, contact.hash) }
+        if (sealed.counter <= highest) return
+        val plaintext = try {
+            GroupCrypto.open(
+                GroupCrypto.EpochKey(sealed.groupId, sealed.epoch, record.epochKey),
+                sealed
+            )
+        } catch (t: Throwable) {
+            return
+        }
+        val inner = try {
+            Wire.Payload.decode(plaintext)
+        } catch (t: Throwable) {
+            return
+        }
+        graph.onDb { store.setGroupHighestCounter(groupId, contact.hash, sealed.counter) }
+        val conversation = graph.onDb { store.ensureGroupConversation(groupId) }
+        handlePayload(conversation, contact, inner)
+    }
+
     // ------------------------------------------------------------------ receiving
 
     /**
@@ -1134,7 +1422,25 @@ class Engine(private val graph: AppGraph) {
 
     /** Everything that arrives inside the ratchet ends up here. */
     private suspend fun process(contact: Contact, payload: Wire.Payload) {
+        // Group traffic is handled first: it belongs to a group conversation, and it must not
+        // create an empty direct conversation with every member who ever posts.
+        when (payload) {
+            is Wire.Payload.GroupKey -> {
+                handleGroupKey(contact, payload)
+                return
+            }
+            is Wire.Payload.GroupMessage -> {
+                handleGroupMessage(contact, payload)
+                return
+            }
+            else -> Unit
+        }
         val conversation = graph.onDb { store.ensureConversation(contact.hash) }
+        handlePayload(conversation, contact, payload)
+    }
+
+    /** One decrypted payload, in a direct conversation or in a group's. */
+    private suspend fun handlePayload(conversation: Conversation, contact: Contact, payload: Wire.Payload) {
         when (payload) {
             is Wire.Payload.Text -> {
                 val now = payload.sentAt.coerceAtMost(System.currentTimeMillis() + 60_000)

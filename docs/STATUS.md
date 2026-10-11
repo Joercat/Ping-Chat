@@ -1,7 +1,7 @@
 # Project status
 
-_Last updated: 2026-10-11 (sixth revision: **the pipeline is green**, and the relay now deploys to
-Render's free plan in one click and keeps itself awake while Ping runs)_
+_Last updated: 2026-10-11 (eighth revision: group chats with sender-key encryption, a mobile-first
+round of UI and reliability fixes, one signed-for-updates APK, and the project relay as the default)_
 
 ## What is verified, and how
 
@@ -109,6 +109,37 @@ expects exactly `app/src/main/AndroidManifest.xml`; `res/` holds resources only.
 file itself parses with the service and both receivers in place.
 
 Found via the annotation mechanism described below — no log copying needed.
+
+### Run 8 (2026-10-11) — group chats, and three more silent-failure classes closed
+
+**Groups** (`core/crypto/GroupCrypto.kt`, wire kinds 11/12, `groups`/`group_members`/`group_state`
+tables, `conversations.group_id`, `NewGroupScreen`/`GroupInfoScreen`, group-aware `ChatScreen`) use
+one epoch key per group, delivered to each member inside their own pairwise ratchet — the relay sees
+ordinary sealed envelopes and learns nothing about the group. Each message gets its own key and nonce
+from `HKDF(epochKey, "PingGroup/v1" ‖ senderSigningKey ‖ counter)`, is signed by the sender's Ed25519
+identity and verified before decryption, carries the group id and epoch in the AAD, and is refused if
+the counter is not higher than the last one seen from that sender (replay) or if the blob's sender key
+is not the key of the peer the ratchet delivered it from (forgery). Counters are `max(now, last + 1)`
+and persisted, so they survive restarts and a clock that jumps backwards. Adding or removing a member
+rotates the key, so a newcomer cannot read the backlog and a leaver cannot read on.
+
+Deliberate limits, stated in the file so nobody has to guess: one shared key per epoch means a
+compromised device exposes the epochs it holds (per-sender chains would narrow this), group
+attachments are not implemented yet, and a removed member simply receives nothing more.
+
+**Three checker bugs, each of which had hidden real errors:**
+
+* `check_symbols.py` never checked that a project type is imported: `GroupRecord` (in `data`) used
+  from `engine` and `ui` compiled only after the import was added — this is the same
+  "unresolved reference" that reached CI once. The new rule parses column-0 declarations only, so a
+  nested `Screen.Contact` no longer shadows the real `Contact`, and it understands nullable generics
+  (`List<GroupRecord?>`), which its first version missed.
+* `check_types.py` inferred the type of `graph.onDb { … }.id` as the *call's* type, so it reported a
+  type error that did not exist. A trailing property access now means "unknown", with a regression
+  case in the self-test.
+* `check_settings.py` counted braces to find `read()`/`persist()`, and an expression body containing
+  a `when` block truncated the member — every field after it looked unpersisted. It now reads class
+  members by indentation.
 
 ### Run 6 (2026-10-11) — free-tier hosting: Render blueprint and a relay that stays awake
 

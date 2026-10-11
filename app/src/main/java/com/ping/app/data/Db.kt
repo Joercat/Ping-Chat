@@ -28,7 +28,25 @@ class Db(context: Context, passphrase: ByteArray) : AutoCloseable {
         database = open(file, passphrase)
         database.enableWriteAheadLogging()
         createSchema()
+        migrate()
     }
+
+    /**
+     * Brings an existing database up to the current schema.
+     *
+     * `CREATE TABLE IF NOT EXISTS` never changes a table that already exists, so a new column has to
+     * be added here as well — otherwise an app that is *updated* (rather than freshly installed)
+     * would run against the old shape and every query naming the new column would fail.
+     */
+    private fun migrate() {
+        val columns = query("PRAGMA table_info(conversations)") { it.getString(1) }
+        if ("group_id" !in columns) {
+            exec("ALTER TABLE conversations ADD COLUMN group_id TEXT")
+        }
+    }
+
+    /** Column names of a table, for the migration above and for tests. */
+    internal fun columnsOf(table: String): List<String> = query("PRAGMA table_info($table)") { it.getString(1) }
 
     private fun open(file: File, passphrase: ByteArray): SQLiteDatabase {
         return try {
@@ -75,6 +93,7 @@ class Db(context: Context, passphrase: ByteArray) : AutoCloseable {
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 peer_hash TEXT NOT NULL,
+                group_id TEXT,
                 created_at INTEGER NOT NULL,
                 last_message_at INTEGER NOT NULL DEFAULT 0,
                 unread INTEGER NOT NULL DEFAULT 0,
@@ -181,6 +200,44 @@ class Db(context: Context, passphrase: ByteArray) : AutoCloseable {
         )
         database.execSQL("CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)")
         database.execSQL("CREATE INDEX IF NOT EXISTS idx_attachments_transfer ON attachments(transfer_id)")
+        // ------------------------------------------------------------------ groups
+        //
+        // A group is a name, a roster, and one epoch key per epoch. The roster and the name are
+        // personal data, so they are sealed with the vault like every other private column; the
+        // epoch keys are sealed the same way. Nothing about a group is derivable from the relay.
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS groups (
+                id TEXT PRIMARY KEY,
+                sealed_name BLOB NOT NULL,
+                epoch INTEGER NOT NULL,
+                sealed_epoch_key BLOB NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS group_members (
+                group_id TEXT NOT NULL,
+                contact_hash TEXT NOT NULL,
+                joined_at INTEGER NOT NULL,
+                PRIMARY KEY(group_id, contact_hash)
+            )
+            """.trimIndent()
+        )
+        // Replay protection and counter bookkeeping: the highest counter seen per sender, and the
+        // counter this device last used (so a counter can never repeat, even across restarts).
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS group_state (
+                group_id TEXT NOT NULL,
+                sender_hash TEXT NOT NULL,
+                highest_counter INTEGER NOT NULL,
+                PRIMARY KEY(group_id, sender_hash)
+            )
+            """.trimIndent()
+        )
         database.execSQL(
             """
             CREATE TABLE IF NOT EXISTS pending_acks (

@@ -24,6 +24,11 @@ object Wire {
     const val MAX_MIME_BYTES = 100
     const val ATTACHMENT_CHUNK_BYTES = 64 * 1024
     const val MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+    /**
+     * A sealed group message carries text and nothing else for now, so this is simply the text
+     * limit plus room for the header, the signature and the AEAD tag.
+     */
+    const val GROUP_MESSAGE_MAX_BYTES = 64 * 1024
 
     private val PADDING_BUCKETS = intArrayOf(256, 1024, 4096, 16 * 1024, 64 * 1024, 128 * 1024, 256 * 1024, MAX_ENVELOPE_BYTES)
 
@@ -197,7 +202,13 @@ object Wire {
         DELETE(7),
         EDIT(8),
         REACTION(9),
-        CONVERSATION_SETTINGS(10);
+        CONVERSATION_SETTINGS(10),
+
+        /** An epoch key for a group, delivered inside the pairwise ratchet. */
+        GROUP_KEY(11),
+
+        /** One sealed group message, delivered inside the pairwise ratchet to each member. */
+        GROUP_MESSAGE(12);
 
         companion object {
             fun fromCode(code: Int): PayloadKind = entries.firstOrNull { it.code == code }
@@ -262,6 +273,28 @@ object Wire {
 
         data class ConversationSettings(
             val disappearingSeconds: Long,
+            override val sentAt: Long = System.currentTimeMillis()
+        ) : Payload()
+
+        /**
+         * Hands a member the key for one group epoch, together with the roster it applies to.
+         *
+         * This travels inside the ordinary pairwise ratchet, so the relay sees one more sealed
+         * envelope and learns nothing: not that a group exists, not who is in it.
+         */
+        data class GroupKey(
+            val groupId: ByteArray,
+            val epoch: Int,
+            val key: ByteArray,
+            val name: String,
+            val members: List<String>,
+            override val sentAt: Long = System.currentTimeMillis()
+        ) : Payload()
+
+        /** A sealed group message (see `GroupCrypto`), forwarded to every member. */
+        data class GroupMessage(
+            val groupId: ByteArray,
+            val blob: ByteArray,
             override val sentAt: Long = System.currentTimeMillis()
         ) : Payload()
 
@@ -330,6 +363,28 @@ object Wire {
                     writer.u8(PayloadKind.CONVERSATION_SETTINGS.code)
                     writer.u64(disappearingSeconds)
                 }
+                is GroupKey -> {
+                    if (groupId.size != 16) throw WireFormatException("group id must be 16 bytes")
+                    if (key.size != 32) throw WireFormatException("epoch key must be 32 bytes")
+                    if (epoch < 1) throw WireFormatException("epochs start at 1")
+                    if (members.size > 256) throw WireFormatException("too many group members")
+                    writer.u8(PayloadKind.GROUP_KEY.code)
+                    writer.blob(groupId)
+                    writer.u32(epoch)
+                    writer.bytes(key)
+                    writer.string(requireLength(name, 128, "group name"))
+                    writer.varint(members.size)
+                    for (member in members) writer.string(requireLength(member, 128, "member hash"))
+                }
+                is GroupMessage -> {
+                    if (groupId.size != 16) throw WireFormatException("group id must be 16 bytes")
+                    if (blob.size > GROUP_MESSAGE_MAX_BYTES) {
+                        throw WireFormatException("group message is too large (${blob.size} bytes)")
+                    }
+                    writer.u8(PayloadKind.GROUP_MESSAGE.code)
+                    writer.blob(groupId)
+                    writer.blob(blob)
+                }
             }
             return writer.toByteArray()
         }
@@ -376,6 +431,26 @@ object Wire {
                     PayloadKind.EDIT -> Edit(reader.string(), reader.string(), sentAt)
                     PayloadKind.REACTION -> Reaction(reader.string(), reader.string(), sentAt)
                     PayloadKind.CONVERSATION_SETTINGS -> ConversationSettings(reader.u64(), sentAt)
+                    PayloadKind.GROUP_KEY -> {
+                        val groupId = reader.blob()
+                        val epoch = reader.u32()
+                        val key = reader.bytes(32)
+                        val name = reader.string()
+                        val count = reader.varint()
+                        if (count > 256) throw WireFormatException("too many group members")
+                        val members = ArrayList<String>(count)
+                        repeat(count) { members.add(reader.string()) }
+                        if (groupId.size != 16) throw WireFormatException("bad group id length")
+                        if (epoch < 1) throw WireFormatException("bad epoch")
+                        GroupKey(groupId, epoch, key, name, members, sentAt)
+                    }
+                    PayloadKind.GROUP_MESSAGE -> {
+                        val groupId = reader.blob()
+                        val blob = reader.blob()
+                        if (groupId.size != 16) throw WireFormatException("bad group id length")
+                        if (blob.size > GROUP_MESSAGE_MAX_BYTES) throw WireFormatException("group message too large")
+                        GroupMessage(groupId, blob, sentAt)
+                    }
                 }
                 reader.expectEnd()
                 return payload

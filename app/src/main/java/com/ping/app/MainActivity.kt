@@ -57,7 +57,9 @@ import com.ping.app.ui.PingController
 import com.ping.app.ui.screens.AddContactScreen
 import com.ping.app.ui.screens.ChatScreen
 import com.ping.app.ui.screens.ContactScreen
+import com.ping.app.ui.screens.GroupInfoScreen
 import com.ping.app.ui.screens.HomeScreen
+import com.ping.app.ui.screens.NewGroupScreen
 import com.ping.app.ui.screens.OnboardingScreen
 import com.ping.app.ui.screens.PickedAttachment
 import com.ping.app.ui.screens.SettingsScreen
@@ -88,6 +90,8 @@ private sealed interface Screen {
     data class Chat(val conversationId: String) : Screen
     data object AddContact : Screen
     data class Contact(val peerHash: String) : Screen
+    data class GroupInfo(val groupId: String) : Screen
+    data object NewGroup : Screen
     data object Settings : Screen
 }
 
@@ -260,7 +264,8 @@ private fun MainNavigation(controller: PingController, deepLink: MutableStateFlo
                 onOpenChat = { screen = Screen.Chat(it.conversation.id) },
                 onAddContact = { screen = Screen.AddContact },
                 onSettings = { screen = Screen.Settings },
-                onShowMyCode = { screen = Screen.AddContact }
+                onShowMyCode = { screen = Screen.AddContact },
+                onNewGroup = { screen = Screen.NewGroup }
             )
 
             is Screen.Chat -> ChatScreen(
@@ -268,6 +273,7 @@ private fun MainNavigation(controller: PingController, deepLink: MutableStateFlo
                 conversationId = current.conversationId,
                 onBack = { screen = Screen.Home },
                 onOpenContact = { peerHash -> screen = Screen.Contact(peerHash) },
+                onOpenGroupInfo = { groupId -> screen = Screen.GroupInfo(groupId) },
                 onPickAttachment = { picker.launch(arrayOf("*/*")) },
                 pickedAttachment = picked,
                 onPickedAttachmentHandled = { picked = null }
@@ -283,6 +289,23 @@ private fun MainNavigation(controller: PingController, deepLink: MutableStateFlo
                 controller = controller,
                 peerHash = current.peerHash,
                 onBack = { screen = Screen.Home }
+            )
+
+            is Screen.NewGroup -> NewGroupScreen(
+                controller = controller,
+                onBack = { screen = Screen.Home },
+                onCreated = { groupId ->
+                    controller.resolveGroupConversation(groupId) { conversationId ->
+                        screen = if (conversationId != null) Screen.Chat(conversationId) else Screen.Home
+                    }
+                }
+            )
+
+            is Screen.GroupInfo -> GroupInfoScreen(
+                controller = controller,
+                groupId = current.groupId,
+                onBack = { screen = Screen.Home },
+                onLeft = { screen = Screen.Home }
             )
 
             is Screen.Settings -> SettingsScreen(

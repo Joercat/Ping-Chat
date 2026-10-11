@@ -144,21 +144,148 @@ class PingStore(private val db: Db, private val vault: Vault) {
     // ------------------------------------------------------------------ conversations
 
     private val conversationColumns =
-        "id, peer_hash, created_at, last_message_at, unread, pinned, muted, archived, disappearing"
+        "id, peer_hash, group_id, created_at, last_message_at, unread, pinned, muted, archived, disappearing"
 
     private fun cursorToConversation(cursor: Cursor, preview: String = "", outgoing: Boolean = false) = Conversation(
         id = cursor.getString(0),
         peerHash = cursor.getString(1),
-        createdAt = cursor.getLong(2),
-        lastMessageAt = cursor.getLong(3),
-        unreadCount = cursor.getInt(4),
-        pinned = cursor.getInt(5) == 1,
-        muted = cursor.getInt(6) == 1,
-        archived = cursor.getInt(7) == 1,
-        disappearingSeconds = cursor.getLong(8),
+        groupId = if (cursor.isNull(2)) null else cursor.getString(2),
+        createdAt = cursor.getLong(3),
+        lastMessageAt = cursor.getLong(4),
+        unreadCount = cursor.getInt(5),
+        pinned = cursor.getInt(6) == 1,
+        muted = cursor.getInt(7) == 1,
+        archived = cursor.getInt(8) == 1,
+        disappearingSeconds = cursor.getLong(9),
         preview = preview,
         lastMessageOutgoing = outgoing
     )
+
+    // ------------------------------------------------------------------ groups
+
+    /**
+     * Stores a group and its roster. The name and the epoch key are sealed with the vault: the
+     * database file is already encrypted, and this keeps a decrypted key from ever being written.
+     */
+    fun saveGroup(id: String, name: String, epoch: Int, epochKey: ByteArray, members: List<String>, createdAt: Long) =
+        db.transaction {
+            db.exec(
+                "INSERT OR REPLACE INTO groups(id, sealed_name, epoch, sealed_epoch_key, created_at) VALUES(?,?,?,?,?)",
+                arrayOf<Any?>(id, vault.seal(name.toByteArray(Charsets.UTF_8)), epoch, vault.seal(epochKey), createdAt)
+            )
+            replaceGroupMembers(id, members, createdAt)
+        }
+
+    fun ensureGroup(
+        id: String,
+        name: String,
+        epoch: Int,
+        epochKey: ByteArray,
+        members: List<String>,
+        createdAt: Long
+    ): GroupRecord = db.transaction {
+        val existing = group(id)
+        if (existing == null) {
+            saveGroup(id, name, epoch, epochKey, members, createdAt)
+        } else {
+            // Never lower the epoch: a replayed old key announcement must not roll the group back.
+            val nextEpoch = maxOf(existing.epoch, epoch)
+            val nextKey = if (epoch >= existing.epoch) epochKey else existing.epochKey
+            if (existing.name != name || nextEpoch != existing.epoch) {
+                db.exec(
+                    "UPDATE groups SET sealed_name = ?, epoch = ?, sealed_epoch_key = ? WHERE id = ?",
+                    arrayOf<Any?>(vault.seal(name.toByteArray(Charsets.UTF_8)), nextEpoch, vault.seal(nextKey), id)
+                )
+            }
+            if (members.isNotEmpty()) addGroupMembers(id, members, createdAt)
+        }
+        group(id) ?: throw IllegalStateException("group was not stored")
+    }
+
+    /** Adds members without touching anyone already in the group. */
+    fun addGroupMembers(groupId: String, members: List<String>, at: Long) {
+        for (member in members) {
+            db.exec(
+                "INSERT OR IGNORE INTO group_members(group_id, contact_hash, joined_at) VALUES(?,?,?)",
+                arrayOf<Any?>(groupId, member, at)
+            )
+        }
+    }
+
+    /** Replaces the roster outright: used when a membership change starts a new epoch. */
+    fun replaceGroupMembers(groupId: String, members: List<String>, at: Long) {
+        db.exec("DELETE FROM group_members WHERE group_id = ?", arrayOf(groupId))
+        addGroupMembers(groupId, members, at)
+    }
+
+    fun removeGroupMember(groupId: String, member: String) =
+        db.exec("DELETE FROM group_members WHERE group_id = ? AND contact_hash = ?", arrayOf(groupId, member))
+
+    fun group(id: String): GroupRecord? {
+        val row = db.queryOne(
+            "SELECT id, sealed_name, epoch, sealed_epoch_key, created_at FROM groups WHERE id = ?",
+            arrayOf(id)
+        ) { cursor ->
+            GroupRecord(
+                id = cursor.getString(0),
+                name = String(vault.open(cursor.getBlob(1)), Charsets.UTF_8),
+                epoch = cursor.getInt(2),
+                epochKey = vault.open(cursor.getBlob(3)),
+                createdAt = cursor.getLong(4)
+            )
+        } ?: return null
+        return row.copy(members = groupMembers(id))
+    }
+
+    fun groups(): List<GroupRecord> = db.query("SELECT id FROM groups ORDER BY created_at DESC") {
+        it.getString(0)
+    }.mapNotNull { group(it) }
+
+    fun groupMembers(groupId: String): List<String> =
+        db.query("SELECT contact_hash FROM group_members WHERE group_id = ? ORDER BY joined_at", arrayOf(groupId)) {
+            it.getString(0)
+        }
+
+    fun deleteGroup(groupId: String) = db.transaction {
+        db.exec("DELETE FROM group_members WHERE group_id = ?", arrayOf(groupId))
+        db.exec("DELETE FROM group_state WHERE group_id = ?", arrayOf(groupId))
+        db.exec("DELETE FROM groups WHERE id = ?", arrayOf(groupId))
+    }
+
+    /**
+     * The group conversation: one per group, so a group chat has the same shape as a direct one.
+     * `peer_hash` repeats the group id to satisfy the NOT NULL constraint — nothing looks a direct
+     * conversation up by that column for group rows (see `conversationForPeer`).
+     */
+    fun ensureGroupConversation(groupId: String): Conversation = db.transaction {
+        val existing = db.queryOne(
+            "SELECT $conversationColumns FROM conversations WHERE group_id = ? LIMIT 1", arrayOf(groupId)
+        ) { cursorToConversation(it) }
+        if (existing != null) return@transaction existing
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        db.exec(
+            "INSERT INTO conversations(id, peer_hash, group_id, created_at, last_message_at) VALUES(?,?,?,?,?)",
+            arrayOf<Any?>(id, "group:$groupId", groupId, now, now)
+        )
+        conversation(id) ?: throw IllegalStateException("group conversation was not created")
+    }
+
+    /** Highest counter seen from a sender in a group (replay protection), 0 when none yet. */
+    fun groupHighestCounter(groupId: String, senderHash: String): Long = db.queryOne(
+        "SELECT highest_counter FROM group_state WHERE group_id = ? AND sender_hash = ?",
+        arrayOf<Any?>(groupId, senderHash)
+    ) { it.getLong(0) } ?: 0L
+
+    /**
+     * Records a counter that has been accepted. Strictly increasing: a replay (or a duplicate
+     * delivery) of anything at or below the stored value is rejected by the caller.
+     */
+    fun setGroupHighestCounter(groupId: String, senderHash: String, counter: Long) =
+        db.exec(
+            "INSERT OR REPLACE INTO group_state(group_id, sender_hash, highest_counter) VALUES(?,?,?)",
+            arrayOf<Any?>(groupId, senderHash, counter)
+        )
 
     /** Finds the direct conversation with a peer, creating it if needed. */
     fun ensureConversation(peerHash: String): Conversation = db.transaction {

@@ -284,8 +284,99 @@ def check_platform_imports(sources) -> list[str]:
     return findings
 
 
+SELF_TEST_SOURCES = {
+    "a/Thing.kt": "package a\nclass Thing(val x: Int)\n",
+    "b/User.kt": "package b\nimport a.Thing\nclass User(val thing: Thing)\n",
+    "b/Bad.kt": "package b\nclass Bad(val thing: Thing) { fun go() { Thing(1) } }\n",
+    "b/Bad2.kt": "package b\nclass Bad2(val things: List<Thing?>)\n",
+    "b/Fine.kt": "package b\nimport a.*\nclass Fine(val thing: Thing)\n",
+    "b/Local.kt": "package b\nclass Thing\nclass Local(val thing: Thing)\n",
+}
+
+
+def self_test() -> list[str]:
+    problems: list[str] = []
+    packages: dict[str, set[str]] = {}
+    for source in SELF_TEST_SOURCES.values():
+        package = re.search(r"^package\s+([\w.]+)", source, re.M).group(1)
+        packages.setdefault(package, set()).update(
+            re.findall(r"\b(?:class|object)\s+([A-Z]\w+)", source)
+        )
+    findings = check_cross_package_imports(SELF_TEST_SOURCES, packages)
+    if not any("Bad2.kt" in f and "Thing" in f for f in findings):
+        problems.append("did not flag a nullable generic type without an import")
+    if not any("Bad.kt" in f and "Thing" in f for f in findings):
+        problems.append("did not flag a cross-package type without an import")
+    if any("User.kt" in f or "Fine.kt" in f or "Local.kt" in f for f in findings):
+        problems.append(f"flagged a file that resolves the name correctly: {findings}")
+    return problems
+
+
+def check_cross_package_imports(sources: dict[str, str], packages: dict[str, set[str]]) -> list[str]:
+    """A class from another package of this project needs an import to be usable.
+
+    Kotlin resolves unqualified names through imports only, so `StateFlow<List<GroupRecord>?>` in a
+    `ui` file fails to compile unless `com.ping.app.data.GroupRecord` is imported — even though the
+    name exists and every other check here resolves it by simple name. That mistake reached CI once
+    ("unresolved reference"), so it is checked directly.
+    """
+    # Only real classes count. `package_members` also returns typealiases and top-level functions,
+    # and the data package declares `typealias ByteArray = …` for a platform-free build, which made
+    # every use of ByteArray elsewhere look like a missing import.
+    declaring: dict[str, str] = {}
+    for source in sources.values():
+        package_match = re.search(r"^package\s+([\w.]+)", source, re.M)
+        if not package_match:
+            continue
+        # Declarations at column 0 only: `MainActivity.kt` nests `data class Contact(…)` inside its
+        # `Screen` sealed class, and a nested class is not reachable as `Contact` from another file.
+        for name in re.findall(
+            r"^(?:@\w+(?:\([^)]*\))?\s*)*(?:private |internal |public |sealed |data |enum |"
+            r"abstract |open |value |inline |expect |actual )*"
+            r"(?:class|interface|object)\s+([A-Z]\w+)",
+            source,
+            re.M,
+        ):
+            declaring.setdefault(name, package_match.group(1))
+
+    findings: list[str] = []
+    for path, source in sources.items():
+        raw = source
+        masked = mask_literals(source)
+        package_match = re.search(r"^package\s+([\w.]+)", raw, re.M)
+        if not package_match:
+            continue
+        here = package_match.group(1)
+        star_imports = set(re.findall(r"^\s*import\s+([\w.]+)\.\*\s*$", raw, re.M))
+        imported = set(re.findall(r"^\s*import\s+[\w.]+?(\w+)\s*(?:as\s+\w+)?\s*$", raw, re.M))
+        declared_here = set(re.findall(r"\b(?:class|interface|object|enum class)\s+([A-Z]\w+)", masked))
+        for name in sorted(declaring):
+            if declaring[name] == here or name in imported or name in declared_here:
+                continue
+            if declaring[name] in star_imports:
+                continue
+            # Used as a type, a constructor or a static member. A qualified use
+            # (`com.ping.app.data.GroupRecord`) needs no import and is skipped by the lookbehind.
+            # Type positions include generics and nullability: `List<GroupRecord?>`, `GroupRecord,`
+            # and `: GroupRecord` all need the import just as much as `GroupRecord(x)` does.
+            used = re.search(rf"(?<![\w.])(?:{name}\s*[(.:<,?)\]]|{name}\b\s*\.)", masked)
+            if used:
+                line = masked[:used.start()].count("\n") + 1
+                findings.append(
+                    f"{os.path.basename(path)}:{line}: '{name}' is from {declaring[name]} but is not imported"
+                )
+    return findings
+
+
 def main() -> int:
     strict = "--strict" in sys.argv
+    if "--self-test" in sys.argv or strict:
+        problems = self_test()
+        if problems:
+            for problem in problems:
+                print("  ✗ self-test:", problem)
+            return 1
+        print("self-test: a cross-package type without an import is caught, correct files stay quiet")
     sources = read_sources()
     members = class_members(sources)
     packages = package_members(sources)
@@ -295,6 +386,7 @@ def main() -> int:
     findings += check_imports(sources, packages)
     findings += check_members(sources, members)
     findings += check_constructors(sources, members, packages)
+    findings += check_cross_package_imports(sources, packages)
     findings += check_platform_imports(sources)
 
     for finding in findings:

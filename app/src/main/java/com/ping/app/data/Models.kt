@@ -23,6 +23,12 @@ data class Contact(
 data class Conversation(
     val id: String,
     val peerHash: String,
+    /**
+     * Set for a group chat. A group conversation uses the message pipeline of a direct one, so
+     * everything built on it (unread counts, disappearing messages, replies, search) works for
+     * groups too; only the addressing on send and the title differ.
+     */
+    val groupId: String? = null,
     val createdAt: Long,
     val lastMessageAt: Long,
     val unreadCount: Int,
@@ -76,6 +82,23 @@ data class AttachmentRecord(
     val status: Int
 ) {
     val complete: Boolean get() = receivedChunks >= chunkCount && path != null
+}
+
+/** A group chat: a name, a roster and the epoch key currently in use. */
+data class GroupRecord(
+    val id: String,
+    val name: String,
+    val epoch: Int,
+    val epochKey: ByteArray,
+    val createdAt: Long,
+    val members: List<String> = emptyList()
+) {
+    val memberCount: Int get() = members.size
+
+    override fun equals(other: Any?): Boolean =
+        other is GroupRecord && other.id == id && other.epoch == epoch && other.name == name
+
+    override fun hashCode(): Int = id.hashCode() * 31 + epoch
 }
 
 data class IdentityRecord(

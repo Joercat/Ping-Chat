@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.Settings
@@ -61,7 +62,8 @@ fun HomeScreen(
     onOpenChat: (ConversationView) -> Unit,
     onAddContact: () -> Unit,
     onSettings: () -> Unit,
-    onShowMyCode: () -> Unit
+    onShowMyCode: () -> Unit,
+    onNewGroup: () -> Unit
 ) {
     val conversations by controller.conversations().collectAsState(initial = null)
     val engineState by controller.engineState.collectAsState()
@@ -82,6 +84,9 @@ fun HomeScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onNewGroup) {
+                        Icon(Icons.Filled.GroupAdd, contentDescription = "New group")
+                    }
                     IconButton(onClick = onShowMyCode) {
                         Icon(Icons.Filled.QrCode, contentDescription = "My code")
                     }

@@ -8,6 +8,7 @@ import com.ping.app.data.AttachmentRecord
 import com.ping.app.data.ChatMessage
 import com.ping.app.data.Contact
 import com.ping.app.data.Conversation
+import com.ping.app.data.GroupRecord
 import com.ping.app.data.SettingsSnapshot
 import com.ping.app.di.AppGraph
 import com.ping.app.di.StorageState
@@ -23,7 +24,8 @@ data class ConversationView(
     val conversation: Conversation,
     val contact: Contact?,
     val displayName: String,
-    val typing: Boolean
+    val typing: Boolean,
+    val group: GroupRecord? = null
 ) {
     val peerHash: String get() = conversation.peerHash
 }
@@ -122,12 +124,19 @@ class PingController(val graph: AppGraph) {
         return graph.onDb {
             graph.store.conversations().map { conversation ->
                 val contact = graph.store.contact(conversation.peerHash)
+                val group = conversation.groupId?.let { graph.store.group(it) }
                 ConversationView(
                     conversation = conversation,
                     contact = contact,
-                    displayName = contact?.displayName?.takeIf { it.isNotBlank() }
-                        ?: contact?.hash?.take(8) ?: "Unknown",
-                    typing = (now - (typingNow[conversation.peerHash] ?: 0L)) < 6_000
+                    displayName = when {
+                        group != null -> group.name
+                        contact?.displayName?.isNotBlank() == true -> contact.displayName
+                        contact != null -> contact.hash.take(8)
+                        else -> "Unknown"
+                    },
+                    // A group has no single peer, so there is nobody to show "typing" for.
+                    typing = group == null && (now - (typingNow[conversation.peerHash] ?: 0L)) < 6_000,
+                    group = group
                 )
             }
         }
@@ -143,6 +152,16 @@ class PingController(val graph: AppGraph) {
             val conversation = graph.onDb { graph.store.ensureConversation(peerHash) }
             graph.bumpRevision()
             onReady(conversation)
+        }
+    }
+
+    /** The conversation of a group, so a freshly created group can be opened. */
+    fun resolveGroupConversation(groupId: String, onReady: (String?) -> Unit) {
+        scope.launch {
+            graph.awaitStorage()
+            val conversation = graph.onDb { graph.store.ensureGroupConversation(groupId) }
+            graph.bumpRevision()
+            onReady(conversation.id)
         }
     }
 
@@ -178,6 +197,46 @@ class PingController(val graph: AppGraph) {
         graph.live("attachment:$attachmentId") { graph.onDb { graph.cryptoStore.attachment(attachmentId) } }
 
     // ------------------------------------------------------------------ chat actions
+
+    // ------------------------------------------------------------------ groups
+
+    fun groups(): StateFlow<List<GroupRecord>?> = graph.live("groups") { graph.onDb { graph.store.groups() } }
+
+    /** This device's own contact hash, for labeling your messages in a group. */
+    fun myHash(): StateFlow<String?> = graph.live("myHash") { graph.engine.selfHash() }
+
+    fun group(groupId: String): StateFlow<GroupRecord?> =
+        graph.live("group:$groupId") { graph.onDb { graph.store.group(groupId) } }
+
+    fun createGroup(name: String, memberHashes: List<String>) = run {
+        graph.awaitStorage()
+        val group = graph.engine.createGroup(name, memberHashes)
+        graph.note(
+            "Created \"${group.name}\" with ${group.memberCount} " +
+                if (group.memberCount == 1) "member" else "members"
+        )
+        group
+    }
+
+    fun addGroupMember(groupId: String, contactHash: String) = run {
+        graph.engine.addGroupMember(groupId, contactHash)
+        graph.note("Added to the group — the key was rotated for everybody")
+    }
+
+    fun removeGroupMember(groupId: String, contactHash: String) = run {
+        graph.engine.removeGroupMember(groupId, contactHash)
+        graph.note("Removed — a fresh key keeps future messages out of reach")
+    }
+
+    fun leaveGroup(groupId: String) = run {
+        graph.engine.leaveGroup(groupId)
+        graph.note("You left the group")
+    }
+
+    fun sendGroupText(groupId: String, text: String) = run {
+        graph.awaitStorage()
+        graph.engine.sendGroupText(groupId, text)
+    }
 
     fun sendText(peerHash: String, text: String) = run {
         graph.awaitStorage()

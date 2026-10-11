@@ -478,6 +478,10 @@ def value_type_from_expression(tail: str, position: int, decls: dict[str, list[F
         return None
     if any(receiver_name(tail, m.start()) == "" for m in ANY_CALL_RE.finditer(tail)):
         return None
+    # `graph.onDb { store.group(id) }.id` produces whatever `.id` is, not a GroupRecord: with a
+    # property access at the end the call's return type says nothing about the value.
+    if re.search(r"\.[A-Za-z_]\w*\s*$", stripped):
+        return None
 
     outermost: int | None = None
     for call in ANY_CALL_RE.finditer(tail):
@@ -868,6 +872,13 @@ class Quiet {
     }
     private fun builtinPassedToBuiltin(count: Long) {
         json.arr(listOf(JsonValue()))
+    }
+    private fun wantsLong(value: Long) {}
+    private fun trailingPropertyIsUnknown() {
+        // `store.contact(…)` is a Contact, but `.hash` is a String: the checker must not treat the
+        // value as a Contact and report a type error that is not there.
+        val size = store.contact("x")?.hash
+        if (size != null) wantsLong(size)
     }
 }
 """
