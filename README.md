@@ -16,10 +16,13 @@ a kind byte and a length.
 
 ## Install it on your phone
 
-1. Build an APK — the easiest way is the GitHub Actions pipeline in
-   [`docs/ci/android-workflow.yml.template`](docs/ci/android-workflow.yml.template) (copy it to
-   `.github/workflows/android.yml` once). It produces `Ping-2.0.0.apk` and, on `main`, a rolling
-   **Releases → latest** download.
+1. Get the APK. The pipeline in `.github/workflows/android.yml` is green and builds both APKs
+   (tests included) on every push:
+   * **From a branch:** GitHub → **Actions** → the newest green *Build, test & package* run →
+     **Artifacts → `ping-apks`**. Inside are `Ping-2.0.0.apk` (install this one) and
+     `Ping-2.0.0-debug.apk`.
+   * **From `main`:** every push to `main` also publishes **Releases → latest**, so the phone can
+     open `https://github.com/Joercat/Ping-Chat/releases/download/latest/Ping-2.0.0.apk` directly.
 2. Open the APK on the phone and allow installing unknown apps once.
 3. Optional but recommended: deploy the relay (three minutes, free) and paste its URL into
    **Settings → Relay address**. Without a relay, Ping still works on the same Wi-Fi.

@@ -1,6 +1,7 @@
 # Project status
 
-_Last updated: 2026-10-11 (fourth revision: three CI rounds diagnosed and fixed)_
+_Last updated: 2026-10-11 (fifth revision: **the pipeline is green** — unit tests pass and both
+APKs build)_
 
 ## What is verified, and how
 
@@ -13,12 +14,25 @@ _Last updated: 2026-10-11 (fourth revision: three CI rounds diagnosed and fixed)
 | Kotlin symbols across modules | **consistent** | `python3 tools/static-checks/check_symbols.py` (imports, receivers, constructors) |
 | Gradle wrapper | **usable** | `gradle-wrapper.jar` is a valid archive (33 entries, `GradleWrapperMain` present), `gradlew` is the genuine 8.x script, `distributionUrl` = gradle-8.7-bin.zip |
 | Android resources | **well-formed** | every XML parses, all vector drawables carry the four required attributes, `R.*` references resolve, adaptive icons cover API 26+ |
-| Android app compile | **not yet run** | needs the Android SDK + Maven; only GitHub Actions can do it — first attempt failed in the SDK step (see below) |
+| Android app compile | **builds** | `./gradlew assembleDebug testDebugUnitTest assembleRelease` in CI (run 38177242537, commit `261e134`) — every step green, `Ping-2.0.0.apk` + `Ping-2.0.0-debug.apk` uploaded as the `ping-apks` artifact |
+| Static type checking | **clean** | `check_symbols.py`, `check_calls.py`, `check_types.py --strict`, `check_sql_schema.py` — all zero findings, and `check_types.py`'s own `--self-test` passes |
 
 The Android modules (`ui`, `service`, `di`, `engine`, `data`) were written without a compiler in
-the environment that produced them, so the two static checkers above exist as a safety net. They
-catch renamed members, missing imports and schema drift, but **the first `assembleDebug` in CI is
-the real gate.**
+the environment that produced them, so the static checkers above exist as a safety net. They catch
+renamed members, missing imports, schema drift, wrong argument counts and the two type errors that
+actually slipped through (`check_types.py`), and since run 5 the real gate — `assembleDebug` in
+CI — is green as well.
+
+### Getting the APK
+
+* **From this branch:** GitHub → **Actions** → the newest green *Build, test & package* run →
+  **Artifacts → `ping-apks`**. Unzip it and install `Ping-2.0.0.apk` (the release build; it is
+  signed with the debug key, which is fine for sideloading). `Ping-2.0.0-debug.apk` is identical
+  apart from debug flags.
+* **From `main`:** every push to `main` also publishes a rolling **Releases → latest**, so the
+  newest APK always sits at
+  `https://github.com/Joercat/Ping-Chat/releases/download/latest/Ping-2.0.0.apk` — a link the phone
+  can open directly.
 
 ## CI run log
 

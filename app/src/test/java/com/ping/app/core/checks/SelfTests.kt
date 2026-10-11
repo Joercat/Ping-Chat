@@ -21,6 +21,13 @@ class CryptoCoreJUnitTest {
             0,
             failures
         )
+        // A suite that ran nothing would also report zero failures, and a green CI run has to mean
+        // the checks really executed. The floor is well below the current count on purpose.
+        assertTrue(
+            "the crypto/protocol suite ran only ${CryptoCoreTest.checks} checks — it used to run " +
+                "more than 300, so something is skipping them",
+            CryptoCoreTest.checks >= 300
+        )
     }
 }
 
@@ -42,5 +49,11 @@ class RelayE2EJUnitTest {
         assumeTrue("PING_RELAY is not set — skipping the live relay suite", !base.isNullOrBlank())
         val failures = RelayE2E.runAll(base!!)
         assertTrue("relay failures:\n" + failures.joinToString("\n"), failures.isEmpty())
+        // Same guard as above: the relay suite must have actually talked to the relay.
+        assertTrue(
+            "the relay suite passed only ${RelayE2E.passed} checks — it used to pass more than 40, " +
+                "so the live end-to-end run is not really happening",
+            RelayE2E.passed >= 40
+        )
     }
 }
