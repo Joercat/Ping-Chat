@@ -312,7 +312,8 @@ class Engine(private val graph: AppGraph) {
                 }
             }
         }
-        update { it.copy(queued = graph.onDb { cryptoStore.outboxCount() }) }
+        val queued = graph.onDb { cryptoStore.outboxCount() }
+        update { it.copy(queued = queued) }
     }
 
     // ------------------------------------------------------------------ maintenance
@@ -495,7 +496,7 @@ class Engine(private val graph: AppGraph) {
         graph.bumpRevision()
         // The peer should follow the same policy, so the setting travels inside the ratchet.
         val contact = graph.onDb { store.contact(peerHash) } ?: return
-        sendEphemeral(contact, Wire.Payload.ConversationSettings(seconds))
+        sendEphemeral(contact.hash, Wire.Payload.ConversationSettings(seconds))
     }
 
     /** Forgets the ratchet with one contact; the next message starts a fresh handshake. */
@@ -545,7 +546,8 @@ class Engine(private val graph: AppGraph) {
             markSent(message.id, System.currentTimeMillis())
         } else {
             graph.onDb { cryptoStore.enqueueOutbox(message.id, peerHash, conversation.id, payload.encode(), now) }
-            update { it.copy(queued = graph.onDb { cryptoStore.outboxCount() }) }
+            val queued = graph.onDb { cryptoStore.outboxCount() }
+            update { it.copy(queued = queued) }
         }
         return graph.onDb { store.message(message.id) } ?: message
     }
@@ -738,7 +740,7 @@ class Engine(private val graph: AppGraph) {
         graph.bumpRevision()
         if (message.outgoing) {
             val contact = graph.onDb { store.contact(message.peerHash) } ?: return
-            sendEphemeral(contact, Wire.Payload.Delete(messageId))
+            sendEphemeral(contact.hash, Wire.Payload.Delete(messageId))
         }
     }
 
@@ -750,7 +752,7 @@ class Engine(private val graph: AppGraph) {
         graph.onDb { store.editMessage(messageId, text, System.currentTimeMillis()) }
         graph.bumpRevision()
         val contact = graph.onDb { store.contact(message.peerHash) } ?: return
-        sendEphemeral(contact, Wire.Payload.Edit(messageId, text))
+        sendEphemeral(contact.hash, Wire.Payload.Edit(messageId, text))
     }
 
     suspend fun react(messageId: String, emoji: String) {
@@ -759,7 +761,7 @@ class Engine(private val graph: AppGraph) {
         graph.bumpRevision()
         if (message.outgoing) return
         val contact = graph.onDb { store.contact(message.peerHash) } ?: return
-        sendEphemeral(contact, Wire.Payload.Reaction(messageId, emoji))
+        sendEphemeral(contact.hash, Wire.Payload.Reaction(messageId, emoji))
     }
 
     /** Best effort: typing indicators and receipts are not worth queueing. */
