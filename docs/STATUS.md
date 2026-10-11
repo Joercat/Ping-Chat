@@ -7,7 +7,7 @@ round of UI and reliability fixes, one signed-for-updates APK, and the project r
 
 | Layer | State | How it was checked |
 | --- | --- | --- |
-| `core/crypto` + `core/protocol` | **387 checks pass** | `tools/selftest/run.sh`, and `./gradlew testDebugUnitTest` in CI (`SelfTests.kt`) |
+| `core/crypto` + `core/protocol` | **401 checks pass** | `tools/selftest/run.sh`, and `./gradlew testDebugUnitTest` in CI (`SelfTests.kt`) |
 | Relay API (`server/node`, `server/cloudflare`) | **49 checks pass against both** | `tools/selftest/run.sh --relay` with a relay running locally |
 | Cloudflare worker packaging | **deploys** | `wrangler deploy --dry-run` (bundle 15.7 KiB, `MAILBOX` binding present) |
 | SQL in `data/` + `engine/` | **schema-consistent** | `python3 tools/static-checks/check_sql_schema.py` (10 tables, 59 columns) |
@@ -123,6 +123,13 @@ is not the key of the peer the ratchet delivered it from (forgery). Counters are
 and persisted, so they survive restarts and a clock that jumps backwards. Adding or removing a member
 rotates the key, so a newcomer cannot read the backlog and a leaver cannot read on.
 
+**Attachments stopped being a dead end.** A received file was shown as an inert chip: it could not
+be opened, saved or shared. Tapping now opens the decrypted copy in whatever app handles its type,
+long pressing offers Open / Save to phone / Share, and the inline image preview opens too. The
+decrypted copy exists only because Android cannot pass bytes to another app any other way: it goes to
+the app's private cache, is handed out through a FileProvider URI that grants read access to the one
+app the user picked, and `AttachmentStore.clearExports()` deletes every copy on the next start.
+
 Deliberate limits, stated in the file so nobody has to guess: one shared key per epoch means a
 compromised device exposes the epochs it holds (per-sender chains would narrow this), group
 attachments are not implemented yet, and a removed member simply receives nothing more.
@@ -140,6 +147,35 @@ attachments are not implemented yet, and a removed member simply receives nothin
 * `check_settings.py` counted braces to find `read()`/`persist()`, and an expression body containing
   a `when` block truncated the member — every field after it looked unpersisted. It now reads class
   members by indentation.
+
+### Run 7 (2026-10-11) — the app was slow, lost names, flashed, stalled transfers, and would not update
+
+Five complaints, five separate causes, all found by reading the code rather than guessing:
+
+1. **Names vanished and lists flashed.** `AppGraph.live` built a *new* flow on every recomposition,
+   so `collectAsState(initial = null)` reset the screen to its empty value each time and then filled
+   in again. It now memoises one flow per key in a `ConcurrentHashMap`; every call site passes a key
+   (`messages:<id>`, `contact:<hash>`, `conversations`, …). This was the single biggest quality bug in
+   the app, and it is why the UI felt like it was fighting the user.
+2. **The chat jumped to the top.** `animateScrollToItem` ran on every recomposition; it now jumps to
+   the newest message when the chat opens and only animates when the reader is within three items of
+   the bottom.
+3. **Sends gave up.** The outbox retried six times over roughly two minutes, then deleted the session
+   and marked the message failed — a phone that was asleep or on a flaky network lost the send. It now
+   retries for as long as the message is wanted (60 attempts, exponential backoff capped at 15
+   minutes), distinguishes a permanent relay rejection from a recoverable one, and wakes a spun-down
+   relay before trying.
+4. **Attachments stalled and could never be resent.** Every chunk was fired in one burst, and the
+   first failure aborted the transfer with nothing left on disk to resume from. The announcement and
+   all remaining chunks now go through the same persistent outbox, so a transfer survives a restart,
+   resumes automatically, and a 500-envelope mailbox no longer makes a 5 MB file impossible.
+5. **"App not installed" on update.** CI signed every build with a *fresh* debug keystore, so each
+   release had a different signature and Android refused to update over the previous one. The project
+   now ships a keystore (`app/keystore/ping.p12`, documented in `app/keystore/README.md`) that signs
+   both debug and release builds, so updates install over each other; `versionCode` 3 / `2.1.0`.
+
+The built-in relay is now `https://ping-relay-tvj1.onrender.com`, pre-filled in onboarding, with a
+one-time migration for installs that stored an empty address (a deliberate choice still wins).
 
 ### Run 6 (2026-10-11) — free-tier hosting: Render blueprint and a relay that stays awake
 
