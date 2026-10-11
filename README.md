@@ -88,13 +88,21 @@ Relay hosting options (Cloudflare free plan, a Raspberry Pi, a free VM, or nothi
 
 ## Verification
 
-* `./gradlew testDebugUnitTest` runs the crypto/protocol self-tests: 387 assertions over the
-  handshake, ratchet, codec, padding, invite codes and safety numbers.
-* The relay can be tested end to end without a phone. With a relay running locally
-  (`node server/node/server.js --port 8080`, or `npx wrangler dev` in `server/cloudflare/`),
-  the JVM suite in `app/src/test/java/com/ping/app/core/checks/` walks a full two-device
-  conversation against it — 49 assertions, including poll/ack, replay, padding buckets and the
-  pre-key exchange.
+```bash
+tools/selftest/run.sh                                 # 387 crypto/protocol checks, no SDK needed
+node server/node/server.js --port 8080 &
+PING_RELAY=http://127.0.0.1:8080 tools/selftest/run.sh --relay    # + 49 live relay checks
+```
+
+* The crypto/protocol suite covers the handshake, ratchet (including out-of-order and
+  post-compromise recovery), codec, padding buckets, invite codes and safety numbers.
+* The relay suite walks a full two-device conversation through `POST /v1/send`, `/v1/poll`,
+  `/v1/ack` and the pre-key exchange, then tries to break the relay: forged signatures, a
+  hijacked mailbox, a replayed nonce, malformed input. **Both relays pass the same 49 checks**,
+  which is what keeps them drop-in interchangeable.
+* In CI the same suites run as JUnit (`./gradlew testDebugUnitTest`) against a Node relay that
+  the workflow starts first.
+* `docs/STATUS.md` records what has been verified, what has not, and what to do next.
 
 ## Security notes and limits
 
