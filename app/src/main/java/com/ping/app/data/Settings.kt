@@ -42,7 +42,14 @@ class Settings(context: Context) {
     private fun read(): SettingsSnapshot = SettingsSnapshot(
         onboardingComplete = prefs.getBoolean("onboarding", false),
         displayName = prefs.getString("display_name", "") ?: "",
-        relayUrl = prefs.getString("relay_url", DEFAULT_RELAY) ?: DEFAULT_RELAY,
+        // One-time adoption of DEFAULT_RELAY for installs that predate it: an empty stored address
+        // means "no relay was configured yet", not "the user refused the built-in one", because
+        // there was nothing to refuse. Once the address has been set (or deliberately cleared) from
+        // the UI, the flag makes the stored value win for good.
+        relayUrl = when {
+            !prefs.getBoolean("relay_url_explicit", false) -> DEFAULT_RELAY
+            else -> prefs.getString("relay_url", DEFAULT_RELAY) ?: DEFAULT_RELAY
+        },
         allowInsecureRelay = prefs.getBoolean("allow_insecure_relay", false),
         keepRelayAwake = prefs.getBoolean("keep_relay_awake", true),
         relayLastSeen = prefs.getLong("relay_last_seen", 0L),
@@ -91,7 +98,11 @@ class Settings(context: Context) {
 
     fun setOnboardingComplete(value: Boolean) = update { it.copy(onboardingComplete = value) }
     fun setDisplayName(value: String) = update { it.copy(displayName = value.take(64)) }
-    fun setRelayUrl(value: String) = update { it.copy(relayUrl = value.trim().trimEnd('/')) }
+    fun setRelayUrl(value: String) = update {
+        // From here on the stored address is the user's decision, including an empty one.
+        prefs.edit().putBoolean("relay_url_explicit", true).apply()
+        it.copy(relayUrl = value.trim().trimEnd('/'))
+    }
     fun setAllowInsecureRelay(value: Boolean) = update { it.copy(allowInsecureRelay = value) }
     fun setKeepRelayAwake(value: Boolean) = update { it.copy(keepRelayAwake = value) }
     fun setRelayLastSeen(time: Long) = update { it.copy(relayLastSeen = time) }
@@ -115,8 +126,16 @@ class Settings(context: Context) {
     }
 
     companion object {
-        /** Pre-filled with a self-hosted friendly default; the user can point it anywhere. */
-        const val DEFAULT_RELAY = ""
+        /**
+         * The relay the app points at out of the box.
+         *
+         * It is the project's own free Render instance (`render.yaml` deploys the same relay to your
+         * own account in one click, and the address can be changed at any time in Settings — the
+         * mailbox only ever holds sealed envelopes, so the relay is a convenience, not a trust
+         * anchor). A relay you run yourself is never worse: the message encryption does not depend
+         * on which relay carried it, which is why switching is safe.
+         */
+        const val DEFAULT_RELAY = "https://ping-relay-tvj1.onrender.com"
 
         val DISAPPEARING_OPTIONS = listOf(
             0L to "Off",

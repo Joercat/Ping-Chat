@@ -52,7 +52,9 @@ import com.ping.app.ui.theme.TextSecondary
 @Composable
 fun OnboardingScreen(controller: PingController, onDone: () -> Unit) {
     var name by remember { mutableStateOf("") }
-    var relay by remember { mutableStateOf("") }
+    // Pre-filled with the relay the app is built for, so "just works" is the default and a
+    // self-hosted address is a deliberate change rather than a required setup step.
+    var relay by remember { mutableStateOf(com.ping.app.data.Settings.DEFAULT_RELAY) }
     var useLan by remember { mutableStateOf(true) }
     var allowInsecure by remember { mutableStateOf(false) }
     val busy by controller.busy.collectAsState()

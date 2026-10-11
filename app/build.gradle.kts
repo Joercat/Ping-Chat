@@ -7,9 +7,25 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Sideload signing key, committed on purpose.
+//
+// Both the debug and the release build are signed with this one key so that a new build installs
+// *over* an older one. Android refuses to update an app whose signature changed — the installer
+// says "App not installed" and the only way forward is to uninstall first, losing all local data
+// (and this app keeps everything local). CI runners generate a fresh ~/.android/debug.keystore on
+// every run, so without a committed key, every build was a different app.
+//
+// This key is public and is not a secret: it proves only "built by Ping's own pipeline". It is not
+// a security boundary, and nothing in the app's cryptography depends on it. Anyone who wants to
+// sign their own builds can still override it with keystore.properties (see docs/BUILD.md) or the
+// KEYSTORE_* environment variables.
+val sideloadKeystoreFile = rootProject.file("app/keystore/ping.p12")
+val sideloadKeystorePassword = "ping-sideload"
+val sideloadKeyAlias = "ping"
+
 // Optional release signing. Set up keystore.properties (see docs/BUILD.md) or
 // the KEYSTORE_* environment variables. Without them the release build is
-// signed with the debug key so that it stays installable for personal use.
+// signed with the key above so that it stays installable for personal use.
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     // A fully qualified `java.io.FileInputStream` does not work in a Kotlin DSL script: `java`
@@ -25,14 +41,24 @@ android {
         applicationId = "com.ping.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0.0"
+        versionCode = 3
+        versionName = "2.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
 
     signingConfigs {
+        // The debug variant uses the committed key too, so a debug APK can also be updated in
+        // place. It is still a separate application id-free build: nothing else changes.
+        if (sideloadKeystoreFile.exists()) {
+            getByName("debug") {
+                storeFile = sideloadKeystoreFile
+                storePassword = sideloadKeystorePassword
+                keyAlias = sideloadKeyAlias
+                keyPassword = sideloadKeystorePassword
+            }
+        }
         create("release") {
             if (keystorePropertiesFile.exists()) {
                 storeFile = keystoreProperties.getProperty("storeFile")?.let { file(it) }
@@ -46,6 +72,11 @@ android {
                     storePassword = System.getenv("KEYSTORE_PASSWORD")
                     keyAlias = System.getenv("KEY_ALIAS")
                     keyPassword = System.getenv("KEY_PASSWORD")
+                } else if (sideloadKeystoreFile.exists()) {
+                    storeFile = sideloadKeystoreFile
+                    storePassword = sideloadKeystorePassword
+                    keyAlias = sideloadKeyAlias
+                    keyPassword = sideloadKeystorePassword
                 }
             }
         }

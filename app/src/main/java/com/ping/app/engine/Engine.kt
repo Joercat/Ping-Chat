@@ -75,7 +75,13 @@ class Engine(private val graph: AppGraph) {
     private var pollNonce: ByteArray? = null
 
     companion object {
-        const val MAX_OUTBOX_ATTEMPTS = 6
+        /**
+         * How many times a message is worth retrying before it is shown as failed. With the backoff
+         * below this is roughly half a day of trying, because "the other phone is off" is normal and
+         * a message that quietly gives up after two minutes is a message that never arrives.
+         */
+        const val MAX_OUTBOX_ATTEMPTS = 60
+        private const val MAX_OUTBOX_BACKOFF_MS = 15 * 60_000L
         private const val POLL_WAIT_MS = RelayApi.DEFAULT_POLL_WAIT_MS
         private const val PREKEY_REPUBLISH_MS = 6 * 60 * 60 * 1000L
     }
@@ -289,29 +295,52 @@ class Engine(private val graph: AppGraph) {
                 graph.onDb { cryptoStore.removeOutbox(entry.id) }
                 continue
             }
-            val delivered = try {
-                deliver(contact, payload)
-            } catch (t: Throwable) {
-                false
-            }
-            if (delivered) {
-                graph.onDb { cryptoStore.removeOutbox(entry.id) }
-                markSent(entry.id, System.currentTimeMillis())
-            } else {
-                val attempts = entry.attempts + 1
-                if (attempts >= MAX_OUTBOX_ATTEMPTS) {
-                    graph.onDb {
-                        cryptoStore.removeOutbox(entry.id)
-                        // The far side may have lost its state: start over with a fresh handshake
-                        // instead of retrying forever against a session nobody can decrypt.
-                        cryptoStore.deleteSession(entry.peerHash)
+            val failure = try {
+                if (deliver(contact, payload)) {
+                    graph.onDb { cryptoStore.removeOutbox(entry.id) }
+                    // A transfer is many rows: the message is only sent once the last of them is
+                    // delivered, so a half-finished attachment never shows as delivered.
+                    val transferId = transferMessageId(entry.id)
+                    if (transferId == null) {
+                        markSent(entry.id, System.currentTimeMillis())
+                    } else {
+                        val remaining = graph.onDb { cryptoStore.pendingTransferRows(transferId) }
+                        if (remaining == 0) markSent(transferId, System.currentTimeMillis())
+                        graph.bumpRevision()
                     }
-                    markFailed(entry.id)
+                    continue
+                }
+                "offline"
+            } catch (t: RelayException) {
+                if (!t.permanent) {
+                    // Network trouble, a busy relay or a sleeping free instance: wait and try again.
+                    t.message ?: t.code
                 } else {
-                    val wait = (2_000L shl attempts).coerceAtMost(10 * 60_000L)
-                    graph.onDb {
-                        cryptoStore.rescheduleOutbox(entry.id, attempts, System.currentTimeMillis() + wait, "offline")
-                    }
+                    // The relay refused this message for good — an unknown mailbox, a bad signature,
+                    // a rate limit. Start over with a fresh handshake so the retry can work.
+                    graph.onDb { cryptoStore.deleteSession(entry.peerHash) }
+                    "rejected: ${t.code}"
+                }
+            } catch (t: Throwable) {
+                t.message ?: "send failed"
+            }
+            val attempts = entry.attempts + 1
+            if (attempts >= MAX_OUTBOX_ATTEMPTS) {
+                // Out of patience after hours of trying; the message shows as failed and can be
+                // retried by hand from the chat.
+                graph.onDb { cryptoStore.removeOutbox(entry.id) }
+                val transferId = transferMessageId(entry.id)
+                if (transferId == null) {
+                    markFailed(entry.id)
+                } else if (graph.onDb { cryptoStore.pendingTransferRows(transferId) } == 0) {
+                    markFailed(transferId)
+                }
+            } else {
+                // 2 s, 4 s, 8 s … capped at 15 minutes: a phone that is offline overnight still has
+                // its messages waiting, and a relay that is asleep is woken by the next attempt.
+                val wait = (2_000L shl attempts.coerceAtMost(20)).coerceAtMost(MAX_OUTBOX_BACKOFF_MS)
+                graph.onDb {
+                    cryptoStore.rescheduleOutbox(entry.id, attempts, System.currentTimeMillis() + wait, failure)
                 }
             }
         }
@@ -711,47 +740,111 @@ class Engine(private val graph: AppGraph) {
     }
 
     /** Sends the manifest followed by every chunk, each one sealed by the ratchet as it goes. */
+    /**
+     * Sends an attachment: one announcement envelope, then one envelope per chunk.
+     *
+     * Everything that does not go through is queued in the outbox instead of being dropped, so a
+     * large file that outgrows the relay's per-mailbox budget finishes by itself once the other
+     * phone has collected what is already there — the retry is per chunk, and the message is only
+     * marked sent when the last row of the transfer has been delivered.
+     */
     private suspend fun sendAttachmentData(contact: Contact, record: AttachmentRecord, file: File) {
         val transferId = Bytes.fromBase64Url(record.transferId)
-        var ok = try {
-            deliver(
-                contact,
-                Wire.Payload.AttachmentMeta(
-                    transferId = transferId,
-                    fileName = record.fileName,
-                    mimeType = record.mimeType,
-                    size = record.size,
-                    sha256 = record.sha256,
-                    chunkCount = record.chunkCount,
-                    fileKey = record.fileKey
-                )
-            )
+        val meta = Wire.Payload.AttachmentMeta(
+            transferId = transferId,
+            fileName = record.fileName,
+            mimeType = record.mimeType,
+            size = record.size,
+            sha256 = record.sha256,
+            chunkCount = record.chunkCount,
+            fileKey = record.fileKey
+        )
+        val announced = try {
+            deliver(contact, meta)
         } catch (t: Throwable) {
             false
         }
-        if (ok) {
-            for (index in 0 until record.chunkCount) {
-                val chunk = withContext(Dispatchers.IO) {
-                    java.io.RandomAccessFile(file, "r").use { handle ->
+        if (!announced) {
+            queueTransfer(contact, record, meta.encode())
+        }
+
+        var index = record.chunkCount
+        for (chunkIndex in 0 until record.chunkCount) {
+            val chunk = withContext(Dispatchers.IO) {
+                java.io.RandomAccessFile(file, "r").use { handle ->
+                    handle.seek(chunkIndex.toLong() * (Wire.ATTACHMENT_CHUNK_BYTES + Aead.TAG_LEN))
+                    val buffer = ByteArray(Wire.ATTACHMENT_CHUNK_BYTES + Aead.TAG_LEN)
+                    val read = handle.read(buffer)
+                    if (read <= 0) ByteArray(0) else if (read == buffer.size) buffer else buffer.copyOf(read)
+                }
+            }
+            if (chunk.isEmpty()) {
+                index = chunkIndex
+                break
+            }
+            val payload = Wire.Payload.AttachmentChunk(transferId, chunkIndex, record.chunkCount, chunk)
+            val delivered = try {
+                deliver(contact, payload)
+            } catch (t: Throwable) {
+                false
+            }
+            if (!delivered) {
+                index = chunkIndex
+                break
+            }
+            index = chunkIndex + 1
+        }
+        if (index < record.chunkCount) {
+            queueTransfer(contact, record, null, from = index)
+        } else if (announced) {
+            markSent(record.messageId, System.currentTimeMillis())
+        } else if (graph.onDb { cryptoStore.pendingTransferRows(record.messageId) } == 0) {
+            markSent(record.messageId, System.currentTimeMillis())
+        }
+    }
+
+    /** Queues the announcement and/or the chunk range that still has to go out. */
+    private suspend fun queueTransfer(
+        contact: Contact,
+        record: AttachmentRecord,
+        announcement: ByteArray? = null,
+        from: Int = -1
+    ) {
+        val now = System.currentTimeMillis()
+        graph.onDb {
+            if (announcement != null) {
+                cryptoStore.enqueueOutbox(
+                    "attachment:${record.messageId}", contact.hash, record.conversationId, announcement, now
+                )
+            }
+            if (from >= 0) {
+                val transferId = Bytes.fromBase64Url(record.transferId)
+                for (index in from until record.chunkCount) {
+                    val chunk = java.io.RandomAccessFile(graph.attachments.fileFor(record.id), "r").use { handle ->
                         handle.seek(index.toLong() * (Wire.ATTACHMENT_CHUNK_BYTES + Aead.TAG_LEN))
                         val buffer = ByteArray(Wire.ATTACHMENT_CHUNK_BYTES + Aead.TAG_LEN)
                         val read = handle.read(buffer)
                         if (read <= 0) ByteArray(0) else if (read == buffer.size) buffer else buffer.copyOf(read)
                     }
+                    if (chunk.isEmpty()) break
+                    cryptoStore.enqueueOutbox(
+                        "chunk:${record.messageId}:$index",
+                        contact.hash,
+                        record.conversationId,
+                        Wire.Payload.AttachmentChunk(transferId, index, record.chunkCount, chunk).encode(),
+                        now
+                    )
                 }
-                if (chunk.isEmpty()) {
-                    ok = false
-                    break
-                }
-                ok = try {
-                    deliver(contact, Wire.Payload.AttachmentChunk(transferId, index, record.chunkCount, chunk))
-                } catch (t: Throwable) {
-                    false
-                }
-                if (!ok) break
             }
         }
-        if (ok) markSent(record.messageId, System.currentTimeMillis()) else markFailed(record.messageId)
+        graph.bumpRevision()
+    }
+
+    /** `chunk:<messageId>:<index>` and `attachment:<messageId>` rows both belong to a transfer. */
+    private fun transferMessageId(outboxId: String): String? = when {
+        outboxId.startsWith("chunk:") -> outboxId.removePrefix("chunk:").substringBeforeLast(":")
+        outboxId.startsWith("attachment:") -> outboxId.removePrefix("attachment:")
+        else -> null
     }
 
     private fun expiryFor(disappearingSeconds: Long, now: Long): Long? =
@@ -897,6 +990,10 @@ class Engine(private val graph: AppGraph) {
     /** Builds the envelope for [payload] and hands it to the best available transport. */
     private suspend fun deliver(contact: Contact, payload: Wire.Payload): Boolean {
         val identity = graph.identity.keyPair() ?: return false
+        // A free-tier relay that has gone to sleep would otherwise make this send fail and burn an
+        // outbox attempt for nothing. Throttled to once per keep-alive interval, so it costs
+        // nothing when the relay is awake.
+        wakeRelayIfStale()
         val use = ensureSession(identity, contact)
         val message = graph.sessions.encrypt(use.session, payload)
 

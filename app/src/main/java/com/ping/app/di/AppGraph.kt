@@ -143,9 +143,26 @@ class AppGraph(context: Context) {
         _revision.value = _revision.value + 1
     }
 
-    /** A read-only view of the database that re-emits after every change. */
-    fun <T> live(initial: T? = null, query: suspend () -> T): StateFlow<T?> =
-        _revision.map { query() }.stateIn(scope, SharingStarted.WhileSubscribed(5_000), initial)
+    /** Shared database views, one per [key]; see [live]. */
+    private val liveViews = java.util.concurrent.ConcurrentHashMap<String, StateFlow<*>>()
+
+    /**
+     * A read-only view of the database that re-emits after every change, **shared per key**.
+     *
+     * Sharing is not an optimisation detail, it is what keeps the UI still. A screen that calls
+     * `controller.messages(id)` inside composition would otherwise build a fresh flow on every
+     * recomposition; `collectAsState` then restarts with the flow's initial value, so the list
+     * blanks and refills over and over — which is exactly what "messages flash on my screen" and
+     * "names don't show up sometimes" looked like. With one flow per key the collected value is
+     * kept, the database is queried once per change instead of once per recomposition, and a
+     * screen that goes away for a moment finds its data already there when it comes back.
+     */
+    fun <T> live(key: String, initial: T? = null, query: suspend () -> T): StateFlow<T?> {
+        @Suppress("UNCHECKED_CAST")
+        return liveViews.getOrPut(key) {
+            _revision.map { query() }.stateIn(scope, SharingStarted.WhileSubscribed(5_000), initial)
+        } as StateFlow<T?>
+    }
 
     fun close() {
         engine.stop()

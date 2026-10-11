@@ -28,17 +28,25 @@ SELF_TEST = """
 class SettingsSnapshot(
     val alpha: Boolean = false,
     val beta: Long = 0L,
+    val gamma: String = "no",
     val forgotten: Boolean = true
 )
 
 private fun read(): SettingsSnapshot = SettingsSnapshot(
     alpha = prefs.getBoolean("alpha", false),
+    // An expression body containing a `when` block is what broke an earlier version of this
+    // checker: everything after this point has to still be seen.
+    gamma = when {
+        prefs.getBoolean("gamma_flag", false) -> "yes"
+        else -> prefs.getString("gamma", "no") ?: "no"
+    },
     beta = prefs.getLong("beta", 0L)
 )
 
 private fun persist(snapshot: SettingsSnapshot) {
     prefs.edit()
         .putBoolean("alpha", snapshot.alpha)
+        .putString("gamma", snapshot.gamma)
         .putLong("beta_key", snapshot.beta)
         .apply()
 }
@@ -63,7 +71,7 @@ def snapshot_fields(source: str) -> list[str]:
 
 def read_bindings(source: str) -> dict[str, str]:
     """{field: preference key} from `read()`."""
-    body = extract_function(source, "private fun read(")
+    body = member_text(source, "read")
     return {
         match.group(1): match.group(2)
         for match in re.finditer(r"(\w+)\s*=\s*prefs\.get\w+\(\"([^\"]+)\"", body)
@@ -72,7 +80,7 @@ def read_bindings(source: str) -> dict[str, str]:
 
 def persist_bindings(source: str) -> dict[str, str]:
     """{field: preference key} from `persist()`."""
-    body = extract_function(source, "private fun persist(")
+    body = member_text(source, "persist")
     # `.putBoolean("alpha", snapshot.alpha)` -> field `alpha`, key `alpha`
     return {
         match.group(2): match.group(1)
@@ -80,23 +88,32 @@ def persist_bindings(source: str) -> dict[str, str]:
     }
 
 
-def extract_function(source: str, signature: str) -> str:
-    """Text of a function body, from its signature to the matching closing brace."""
-    start = source.find(signature)
+MEMBER_RE = re.compile(r"^    (?:private |internal |public |protected |override |suspend |inline )*"
+                       r"(?:fun|val|var|companion|object)\b", re.M)
+
+
+def member_text(source: str, name: str) -> str:
+    """Text of one class member, from its declaration to the next member.
+
+    Counting braces does not work here: `read()` is an expression body whose first brace belongs to
+    a `when` block, so a brace-matching reader stops inside the expression and silently loses every
+    line after it. Class members are separated by the next line at the same indentation instead,
+    which is exactly how this file is written.
+    """
+    start = source.find(f"fun {name}(")
     if start == -1:
         return ""
-    index, depth, seen = start, 0, False
-    while index < len(source):
-        char = source[index]
-        if char == "{":
-            depth += 1
-            seen = True
-        elif char == "}":
-            depth -= 1
-            if seen and depth == 0:
-                return source[start:index + 1]
-        index += 1
-    return source[start:]
+    # Back up to the start of the declaration line (its modifiers).
+    line_start = source.rfind("\n", 0, start) + 1
+    following = MEMBER_RE.search(source, source.find("\n", start) + 1)
+    end = following.start() if following else len(source)
+    return source[line_start:end]
+
+
+def assigned_fields(source: str, member: str) -> set[str]:
+    """Every field `field = …` assigned inside one member, whatever the expression looks like."""
+    body = member_text(source, member)
+    return set(re.findall(r"(?<![\w.])(\w+)\s*=", body))
 
 
 def findings_for(source: str, label: str) -> list[str]:
@@ -106,8 +123,9 @@ def findings_for(source: str, label: str) -> list[str]:
         return [f"{label}: no SettingsSnapshot data class found"]
     loaded = read_bindings(source)
     stored = persist_bindings(source)
+    read_fields = assigned_fields(source, "read")
     for field in fields:
-        if field not in loaded:
+        if field not in read_fields:
             findings.append(f"{label}: `{field}` is never read in read() — it always comes back as the default")
         if field not in stored:
             findings.append(f"{label}: `{field}` is never written in persist() — changing it does not survive a restart")
@@ -135,6 +153,8 @@ def self_test() -> list[str]:
         problems.append("did not notice a field read and written under different keys")
     if any("alpha" in f for f in findings):
         problems.append(f"reported a field that is correct: {findings}")
+    if any("gamma" in f for f in findings):
+        problems.append(f"lost a field declared after a `when` block: {findings}")
     return problems
 
 

@@ -114,7 +114,7 @@ class PingController(val graph: AppGraph) {
     // ------------------------------------------------------------------ lists
 
     fun conversations(): StateFlow<List<ConversationView>?> =
-        graph.live { conversationViews() }
+        graph.live("conversations") { conversationViews() }
 
     private suspend fun conversationViews(): List<ConversationView> {
         val now = System.currentTimeMillis()
@@ -133,7 +133,8 @@ class PingController(val graph: AppGraph) {
         }
     }
 
-    fun totalUnread(): StateFlow<Int?> = graph.live { graph.onDb { graph.store.totalUnread() } }
+    fun totalUnread(): StateFlow<Int?> =
+        graph.live("totalUnread") { graph.onDb { graph.store.totalUnread() } }
 
     /** Turns a peer hash (from a deep link or a notification) into a conversation. */
     fun resolveConversation(peerHash: String, onReady: (Conversation?) -> Unit) {
@@ -146,20 +147,21 @@ class PingController(val graph: AppGraph) {
     }
 
     fun messages(conversationId: String): StateFlow<List<ChatMessage>?> =
-        graph.live { graph.onDb { graph.store.messages(conversationId) } }
+        graph.live("messages:$conversationId") { graph.onDb { graph.store.messages(conversationId) } }
 
     fun conversation(conversationId: String): StateFlow<Conversation?> =
-        graph.live { graph.onDb { graph.store.conversation(conversationId) } }
+        graph.live("conversation:$conversationId") { graph.onDb { graph.store.conversation(conversationId) } }
 
     fun conversationForPeer(peerHash: String): StateFlow<Conversation?> =
-        graph.live { graph.onDb { graph.store.conversationForPeer(peerHash) } }
+        graph.live("conversationForPeer:$peerHash") { graph.onDb { graph.store.conversationForPeer(peerHash) } }
 
     fun contact(peerHash: String): StateFlow<Contact?> =
-        graph.live { graph.onDb { graph.store.contact(peerHash) } }
+        graph.live("contact:$peerHash") { graph.onDb { graph.store.contact(peerHash) } }
 
-    fun contacts(): StateFlow<List<Contact>?> = graph.live { graph.onDb { graph.store.contacts() } }
+    fun contacts(): StateFlow<List<Contact>?> =
+        graph.live("contacts") { graph.onDb { graph.store.contacts() } }
 
-    fun verification(peerHash: String): StateFlow<VerificationView?> = graph.live {
+    fun verification(peerHash: String): StateFlow<VerificationView?> = graph.live("verification:$peerHash") {
         graph.onDb {
             val mine = graph.identity.keyPair() ?: return@onDb null
             val theirs = graph.store.contact(peerHash) ?: return@onDb null
@@ -173,7 +175,7 @@ class PingController(val graph: AppGraph) {
     }
 
     fun attachment(attachmentId: String): StateFlow<AttachmentRecord?> =
-        graph.live { graph.onDb { graph.cryptoStore.attachment(attachmentId) } }
+        graph.live("attachment:$attachmentId") { graph.onDb { graph.cryptoStore.attachment(attachmentId) } }
 
     // ------------------------------------------------------------------ chat actions
 
@@ -293,7 +295,7 @@ class PingController(val graph: AppGraph) {
 
     fun setDefaultDisappearing(seconds: Long) = run { graph.settings.setDefaultDisappearing(seconds) }
 
-    fun storageSummary(): StateFlow<String?> = graph.live {
+    fun storageSummary(): StateFlow<String?> = graph.live("storageSummary") {
         graph.onDb {
             val messages = graph.store.messageCount()
             val attachments = graph.cryptoStore.attachmentCount()

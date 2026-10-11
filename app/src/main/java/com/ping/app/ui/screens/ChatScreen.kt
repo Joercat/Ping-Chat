@@ -97,9 +97,20 @@ fun ChatScreen(
         controller.markRead(conversationId, peerHash.orEmpty())
     }
 
+    // Land at the newest message when the conversation opens …
+    LaunchedEffect(conversationId) {
+        val count = messages?.size ?: 0
+        if (count > 0) listState.scrollToItem(count - 1)
+    }
+
+    // … but only follow new messages while the reader is already at the bottom. Animating on every
+    // incoming message forced the list around while somebody was reading history, which is part of
+    // why the screen felt like it was flashing.
     LaunchedEffect(messages?.size) {
         val count = messages?.size ?: 0
-        if (count > 0) listState.animateScrollToItem(count - 1)
+        if (count == 0) return@LaunchedEffect
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+        if (lastVisible >= count - 3) listState.animateScrollToItem(count - 1)
     }
 
     LaunchedEffect(peerHash, pickedAttachment) {

@@ -181,6 +181,18 @@ class CryptoStore(private val db: Db, private val vault: Vault) {
 
     fun outboxCount(): Int = db.queryOne("SELECT COUNT(*) FROM outbox") { it.getInt(0) } ?: 0
 
+    /**
+     * Outbox rows still waiting for one attachment transfer.
+     *
+     * A transfer bigger than one envelope is queued as several outbox rows (`attachment:<id>` for
+     * the announcement and `chunk:<id>:<index>` for every chunk), so its progress is simply how many
+     * of those rows are left.
+     */
+    fun pendingTransferRows(messageId: String): Int = db.queryOne(
+        "SELECT COUNT(*) FROM outbox WHERE id = ? OR id LIKE ?",
+        arrayOf<Any?>("attachment:$messageId", "chunk:$messageId:%")
+    ) { it.getInt(0) } ?: 0
+
     fun rescheduleOutbox(id: String, attempts: Int, nextAttemptAt: Long, error: String?) =
         db.exec(
             "UPDATE outbox SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE id = ?",
