@@ -94,7 +94,32 @@ file itself parses with the service and both receivers in place.
 
 Found via the annotation mechanism described below — no log copying needed.
 
-### Reading a failed run without the raw log
+### Run 5 (2026-10-11) — the first real Kotlin errors
+
+The manifest fix worked and the run reached `:app:compileDebugKotlin`. Six errors, all in
+`engine/Engine.kt`, all real bugs rather than configuration:
+
+| Line | Error | What it was |
+| --- | --- | --- |
+| 498, 741, 753, 762 | `Type mismatch: inferred type is Contact but String was expected` | `sendEphemeral(contact, …)` where the parameter is `peerHash: String` — the four call sites meant `contact.hash` |
+| 315, 548 | `Suspension functions can be called only within coroutine body` | `update { it.copy(queued = graph.onDb { … }) }` — `update` takes a plain lambda, so the suspend `onDb` call had to move outside it |
+
+Both classes of mistake are now caught *before* a build, by a new checker:
+
+```bash
+python3 tools/static-checks/check_types.py --strict   # also runs its own self-test
+```
+
+`check_types.py` follows declared return types, scopes, parameters, properties (including
+`get() =` and `by lazy` forms) and lambda regions, and reports two things: an object passed where a
+Kotlin builtin is expected (or the reverse), and a suspend call inside a lambda that is not
+`inline` and not declared `suspend`. It is deliberately conservative — a call whose receiver or
+declaration it cannot resolve is simply not judged — because a false finding costs a build cycle.
+`--self-test` runs both rules over a snippet containing the two bugs from this run plus four
+look-alikes, so the checker cannot silently stop working. Reintroducing the six errors above makes
+it report exactly six findings, and it is clean on the tree as it stands.
+
+## Reading a failed run without the raw log
 
 GitHub's log and artifact downloads are not reachable from the environment that maintains this
 repository, and the job page needs a signed-in session. `gradlew` therefore carries one small,
@@ -142,6 +167,8 @@ PING_RELAY=http://127.0.0.1:8080 tools/selftest/run.sh --relay
 # static checks (run after editing data/ or engine/)
 python3 tools/static-checks/check_sql_schema.py
 python3 tools/static-checks/check_symbols.py --strict
+python3 tools/static-checks/check_calls.py --strict
+python3 tools/static-checks/check_types.py --strict
 
 # the real build
 ./gradlew assembleDebug testDebugUnitTest
