@@ -14,6 +14,13 @@ You only need to understand one thing before picking an option:
 Two relays ship in this repository and they speak exactly the same HTTP API, so you can switch
 between them at any time without touching the app:
 
+> **GitHub is not a host here, and never will be.** The repository is only used to *build* the APK.
+> Nothing about the running app is tied to GitHub: the relay runs on Cloudflare's free tier, on a
+> Raspberry Pi, or on a VM you already pay for — and if every free tier changed its terms tomorrow,
+> the zero-dependency Node relay keeps working on hardware you own. A GitHub-hosted relay would be
+> exactly the kind of always-on third-party dependency this project avoids, and repositories,
+> Actions minutes and releases are not a hosting product.
+
 | Relay | Where | File |
 | --- | --- | --- |
 | Cloudflare Worker + Durable Objects | Cloudflare's free plan (no card, no server) | `server/cloudflare/` |

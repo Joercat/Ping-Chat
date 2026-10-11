@@ -1,6 +1,6 @@
 # Project status
 
-_Last updated: 2026-10-11 (second revision: first CI run diagnosed)_
+_Last updated: 2026-10-11 (fourth revision: three CI rounds diagnosed and fixed)_
 
 ## What is verified, and how
 
@@ -45,14 +45,48 @@ fails on every run (android-actions/setup-android#537). The runner image already
 The workflow file itself (`.github/workflows/android.yml`) has to be updated by hand — the token
 available to the agent cannot write workflow files. Everything else in the run was skipped.
 
+### Run 2 (2026-10-11) — same failure, workflow file not actually updated
+
+The workflow was edited (header comments removed) but line 33 still read
+`android-actions/setup-android@v3`, so the run failed identically. Fixing a workflow file is the
+one thing the automated agent cannot do: pushes touching `.github/workflows/**` are rejected with
+"refusing to allow a GitHub App to create or update workflow … without `workflows` permission".
+
+### Run 3 (2026-10-11) — SDK step passed, real build-script bug found
+
+```
+* Where: Build file 'app/build.gradle.kts' line: 14
+* What went wrong: Script compilation error:
+    if (keystorePropertiesFile.exists()) load(java.io.FileInputStream(keystorePropertiesFile))
+                                                           ^ Unresolved reference: io
+```
+
+The workflow fix worked (the SDK, Node, Gradle and relay steps all ran). Past that, a genuine bug:
+inside a Kotlin DSL script `java` resolves to the *Java plugin extension*, not the package, so a
+fully qualified `java.io.FileInputStream` cannot be resolved. Fixed with a top-level
+`import java.io.FileInputStream` and a comment recording why.
+
+Three more problems found by re-reading the sources while the fix was being written, none of which
+a static checker could see:
+
+| Bug | Consequence | Fix |
+| --- | --- | --- |
+| `MainActivity` was a `ComponentActivity` but the app-lock code casts to `FragmentActivity` (required by `BiometricPrompt`) | turning the app lock on would have locked the user out permanently | it now extends `FragmentActivity` (still a `ComponentActivity`, so Compose is unaffected) |
+| `displayNameOf(uri)` called a `Context` extension without a receiver | compile error, would have stopped the build again | `context.displayNameOf(uri)` |
+| system Back was disabled inside a chat | Back closed the app instead of returning to the conversation list | the handler now covers every screen except Home |
+| no escape from the lock screen when a phone has no biometrics or screen lock | app unusable after enabling the lock on such a device | "Turn off the app lock and continue" button |
+
+`tools/static-checks/check_symbols.py` gained a check for platform/JDK types used without an
+import — the same class of mistake as the `FileInputStream` bug, now caught locally.
+
 ## First thing to do next
 
-1. Replace `.github/workflows/android.yml` with the current `docs/ci/android-workflow.yml.template`
-   (GitHub web UI: open the file → pencil → select all → paste → commit).
-2. Re-run the workflow. The SDK step should pass; the next thing that can fail is the first real
-   compile of the Android modules. Expect the class of problem a static checker cannot see:
-   Compose compiler complaints, an Android API that needs a newer `compileSdk`, or a green-but-empty
-   JUnit run.
+1. Update `.github/workflows/android.yml` — it still contains `android-actions/setup-android@v3`.
+   Copy `docs/ci/android-workflow.yml.template` over it in the GitHub web editor. Automated pushes
+   cannot touch workflow files, and the branch is otherwise fixed and ready.
+2. The next run is the first real compile of the Android modules. Expect the class of problem a
+   static checker cannot see: Compose compiler complaints, an Android API that needs a newer
+   `compileSdk`, or a green-but-empty JUnit run.
 3. Fix, repeat, then download `Ping-2.0.0.apk` (artifact, or the rolling `latest` release).
 
 ## Known gaps / deliberate decisions

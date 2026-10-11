@@ -1,4 +1,5 @@
 // app/build.gradle.kts
+import java.io.FileInputStream
 import java.util.Properties
 
 plugins {
@@ -11,7 +12,9 @@ plugins {
 // signed with the debug key so that it stays installable for personal use.
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
-    if (keystorePropertiesFile.exists()) load(java.io.FileInputStream(keystorePropertiesFile))
+    // A fully qualified `java.io.FileInputStream` does not work in a Kotlin DSL script: `java`
+    // resolves to the Java plugin extension, not the package, so the import above is required.
+    if (keystorePropertiesFile.exists()) load(FileInputStream(keystorePropertiesFile))
 }
 
 android {

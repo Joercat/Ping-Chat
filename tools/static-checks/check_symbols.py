@@ -243,6 +243,47 @@ def check_constructors(sources, members, packages) -> list[str]:
     return findings
 
 
+# Types from the platform/JDK that always have to be imported (or be in the same package). Missing
+# one of these is the classic "compiles in the IDE, fails in CI" mistake.
+PLATFORM_TYPES = {
+    "Context", "Intent", "Uri", "Log", "Build", "File", "Cursor", "Bundle", "Bitmap",
+    "BitmapFactory", "Notification", "NotificationChannel", "NotificationManager", "PendingIntent",
+    "Service", "BroadcastReceiver", "IntentFilter", "Handler", "Looper", "Color", "Application",
+    "ContentResolver", "SharedPreferences", "KeyStore", "SecretKey", "Cipher", "Mac", "MessageDigest",
+    "ByteBuffer", "InputStream", "OutputStream", "FileInputStream", "FileOutputStream", "Socket",
+    "ServerSocket", "URL", "HttpURLConnection", "Properties", "UUID", "Date", "SimpleDateFormat",
+    "Locale", "Random", "Collections", "Arrays", "CharBuffer", "CipherInputStream",
+    "CipherOutputStream", "Activity", "ComponentName", "PackageManager", "WindowManager",
+    "View", "Settings", "Environment", "Process", "SystemClock",
+}
+
+# Types that live in the same package as the file that uses them, or that Kotlin resolves without
+# an import. Anything here is exempt from the check.
+SAME_FILE_TYPES = {"R"}
+
+
+def check_platform_imports(sources) -> list[str]:
+    findings = []
+    for path, source in sources.items():
+        raw = source
+        source = mask_literals(source)
+        if re.search(r"^\s*import\s+[\w.]+?\.\*\s*$", raw, re.M):
+            continue
+        imported = set(re.findall(r"^\s*import\s+[\w.]+?(\w+)\s*(?:as\s+\w+)?\s*$", raw, re.M))
+        declared = set(re.findall(r"\b(?:class|interface|object|enum class)\s+([A-Z]\w+)", source))
+        for name in sorted(PLATFORM_TYPES):
+            if name in imported or name in declared or name in SAME_FILE_TYPES:
+                continue
+            # Used as a type, a constructor or a static member. The lookbehind keeps fully
+            # qualified uses (android.content.Context, java.security.MessageDigest) out of it —
+            # those do not need an import.
+            used = re.search(rf"(?<![\w.])(?:{name}\s*[(.:<]|{name}\b\s*\.)", source)
+            if used:
+                line = source[:used.start()].count("\n") + 1
+                findings.append(f"{os.path.basename(path)}:{line}: '{name}' is used but not imported")
+    return findings
+
+
 def main() -> int:
     strict = "--strict" in sys.argv
     sources = read_sources()
@@ -254,6 +295,7 @@ def main() -> int:
     findings += check_imports(sources, packages)
     findings += check_members(sources, members)
     findings += check_constructors(sources, members, packages)
+    findings += check_platform_imports(sources)
 
     for finding in findings:
         print("  ✗", finding)

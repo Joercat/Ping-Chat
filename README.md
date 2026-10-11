@@ -28,6 +28,10 @@ Details, signing, `adb install` and troubleshooting: [`docs/BUILD.md`](docs/BUIL
 Relay hosting options (Cloudflare free plan, a Raspberry Pi, a free VM, or nothing at all):
 [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
+> GitHub is used **only to build the APK** — the app never talks to it, and it is not a hosting
+> platform. The relay runs on Cloudflare's free tier or on hardware you own, and the Node relay has
+> no dependencies, so nothing here breaks if a free tier changes its terms (or GitHub does).
+
 ---
 
 ## What you get

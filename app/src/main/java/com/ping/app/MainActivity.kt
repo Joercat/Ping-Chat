@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -31,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -44,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -90,7 +91,7 @@ private sealed interface Screen {
     data object Settings : Screen
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private lateinit var graph: AppGraph
     private val deepLink = MutableStateFlow<DeepLink?>(null)
@@ -184,7 +185,13 @@ private fun PingRoot(graph: AppGraph, deepLink: MutableStateFlow<DeepLink?>) {
                     onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
                 }
                 if (settings.appLock && !unlocked) {
-                    UnlockScreen(onUnlock = { unlocked = true })
+                    UnlockScreen(
+                        onUnlock = { unlocked = true },
+                        onUnlockWithoutAuth = {
+                            controller.setAppLock(false)
+                            unlocked = true
+                        }
+                    )
                 } else {
                     MainNavigation(controller = controller, deepLink = deepLink)
                 }
@@ -240,7 +247,7 @@ private fun MainNavigation(controller: PingController, deepLink: MutableStateFlo
         if (uri != null) {
             picked = PickedAttachment(
                 uri = uri,
-                name = displayNameOf(uri) ?: "attachment",
+                name = context.displayNameOf(uri) ?: "attachment",
                 mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
             )
         }
@@ -301,7 +308,7 @@ private fun MainNavigation(controller: PingController, deepLink: MutableStateFlo
         }
     }
 
-    BackHandler(enabled = screen != Screen.Home && !(screen is Screen.Chat)) {
+    BackHandler(enabled = screen != Screen.Home) {
         screen = Screen.Home
     }
 }
@@ -349,7 +356,7 @@ private fun FailureScreen(reason: String) {
 
 /** Optional app lock, on top of the phone's own lock screen. */
 @Composable
-private fun UnlockScreen(onUnlock: () -> Unit) {
+private fun UnlockScreen(onUnlock: () -> Unit, onUnlockWithoutAuth: () -> Unit) {
     val context = LocalContext.current
     val activity = context as? androidx.fragment.app.FragmentActivity
     var problem by remember { mutableStateOf<String?>(null) }
@@ -425,6 +432,14 @@ private fun UnlockScreen(onUnlock: () -> Unit) {
                 },
                 modifier = Modifier.fillMaxWidth()
             ) { Text(if (available) "Unlock" else "Open security settings") }
+            if (!available) {
+                // Escape hatch: without this a phone with no biometrics and no screen lock can
+                // never open the app again once the lock is on.
+                TextButton(
+                    onClick = { onUnlockWithoutAuth() },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Turn off the app lock and continue") }
+            }
             problem?.let {
                 Spacer(Modifier.height(16.dp))
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
