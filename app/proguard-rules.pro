@@ -1,53 +1,33 @@
-# proguard-rules.pro
+# R8 rules for Ping. The release build does not minify (see app/build.gradle.kts), so these
+# mostly matter if R8 is ever switched on — but the keeps below are the ones that would bite.
 
-# ---- Kotlin serialization ----
--keepattributes *Annotation*, InnerClasses
--dontnote kotlinx.serialization.AnnotationsKt
--keepclassmembers class kotlinx.serialization.json.** { *** Companion; }
--keepclasseswithmembers class kotlinx.serialization.json.** {
-    kotlinx.serialization.KSerializer serializer(...);
-}
--keep,includedescriptorclasses class com.ping.app.**$$serializer { *; }
--keepclassmembers class com.ping.app.** {
-    *** Companion;
-}
--keepclasseswithmembers class com.ping.app.** {
-    kotlinx.serialization.KSerializer serializer(...);
-}
-
-# ---- Bouncy Castle ----
+# ---- Bouncy Castle ---------------------------------------------------------------------
+# Loaded reflectively at runtime (org.bouncycastle.jce.provider.BouncyCastleProvider) and used
+# through the JCE, so the provider and its algorithm implementations must survive shrinking.
 -keep class org.bouncycastle.** { *; }
 -dontwarn org.bouncycastle.**
 -dontwarn javax.naming.**
--dontwarn org.slf4j.**
 
-# ---- Room ----
--keep class * extends androidx.room.RoomDatabase
--keep @androidx.room.Entity class *
--dontwarn androidx.room.paging.**
-
-# ---- OkHttp ----
--dontwarn okhttp3.**
--dontwarn okio.**
--dontwarn org.conscrypt.**
--dontwarn org.bouncycastle.jsse.**
--dontwarn org.openjsse.**
-
-# ---- SQLCipher ----
+# ---- SQLCipher -------------------------------------------------------------------------
+# The native library is loaded by the framework class itself; the loader must not be renamed.
 -keep class net.zetetic.database.** { *; }
--dontwarn net.zetetic.database.**
+-keep class net.zetetic.database.sqlcipher.SQLiteDatabase { *; }
+-dontwarn net.zetetic.**
 
-# ---- ZXing ----
+# ---- QR scanning (zxing-android-embedded) ----------------------------------------------
+-keep class com.journeyapps.barcodescanner.** { *; }
 -keep class com.google.zxing.** { *; }
 -dontwarn com.google.zxing.**
 
-# ---- Coil ----
--dontwarn coil.**
+# ---- AndroidX / Compose internals that reflectively look things up ----------------------
+-keepattributes *Annotation*, InnerClasses, Signature, Exceptions
+-keep class androidx.lifecycle.DefaultLifecycleObserver
+-keep class androidx.core.app.NotificationCompat { *; }
 
-# ---- Coroutines ----
--dontwarn kotlinx.coroutines.**
--keepclassmembers class kotlinx.coroutines.** { volatile <fields>; }
-
-# ---- Model classes touched by reflection-free serialization ----
--keep class com.ping.app.core.crypto.** { *; }
--keep class com.ping.app.core.transport.** { *; }
+# ---- The app's own reflection-free-but-enumerated types -------------------------------
+# Kept so that a future minified build cannot break the state machine by stripping enums or
+# companion objects that are only referenced from debug tooling.
+-keepclassmembers enum com.ping.app.** { *; }
+-keepclassmembers class com.ping.app.** {
+    *** Companion;
+}

@@ -1,0 +1,111 @@
+package com.ping.app.data
+
+import com.ping.app.core.crypto.Bytes
+
+/** A person you can talk to, as known locally. Keys are the source of truth, names are decoration. */
+data class Contact(
+    val hash: String,
+    val signingKey: ByteArray,
+    val dhKey: ByteArray,
+    val displayName: String,
+    val mailbox: ByteArray,
+    val relayUrl: String,
+    val addedAt: Long,
+    val verified: Boolean = false,
+    val blocked: Boolean = false,
+    val disappearingSeconds: Long = 0L,
+    val lastSeenAt: Long? = null
+) {
+    override fun equals(other: Any?): Boolean = other is Contact && other.hash == hash
+    override fun hashCode(): Int = hash.hashCode()
+}
+
+data class Conversation(
+    val id: String,
+    val peerHash: String,
+    val createdAt: Long,
+    val lastMessageAt: Long,
+    val unreadCount: Int,
+    val pinned: Boolean,
+    val muted: Boolean,
+    val archived: Boolean,
+    val disappearingSeconds: Long,
+    /** Filled in by the UI layer for the list. */
+    val preview: String = "",
+    val lastMessageOutgoing: Boolean = false
+)
+
+enum class MessageStatus { PENDING, SENT, DELIVERED, READ, FAILED }
+
+/** A local message. `body` is only ever held in memory in the clear. */
+data class ChatMessage(
+    val id: String,
+    val conversationId: String,
+    val peerHash: String,
+    val outgoing: Boolean,
+    val kind: Int,
+    val body: String?,
+    val replyToId: String?,
+    val createdAt: Long,
+    val sentAt: Long?,
+    val deliveredAt: Long?,
+    val readAt: Long?,
+    val status: MessageStatus,
+    val attachmentId: String?,
+    val expiresAt: Long?,
+    val editedAt: Long?,
+    val reactions: String?
+) {
+    val isText: Boolean get() = body != null
+}
+
+data class AttachmentRecord(
+    val id: String,
+    val transferId: String,
+    val messageId: String,
+    val conversationId: String,
+    val fileName: String,
+    val mimeType: String,
+    val size: Int,
+    val chunkCount: Int,
+    val sha256: ByteArray,
+    val fileKey: ByteArray,
+    val outgoing: Boolean,
+    val path: String?,
+    val receivedChunks: Int,
+    val status: Int
+) {
+    val complete: Boolean get() = receivedChunks >= chunkCount && path != null
+}
+
+data class IdentityRecord(
+    val signingPrivateKey: ByteArray,
+    val signingPublicKey: ByteArray,
+    val dhPrivateKey: ByteArray,
+    val dhPublicKey: ByteArray,
+    val dhBinding: ByteArray,
+    val displayName: String,
+    val createdAt: Long
+)
+
+data class SessionRecord(
+    val peerHash: String,
+    val state: ByteArray,
+    val tag: ByteArray,
+    val updatedAt: Long,
+    val peerIdentityKey: ByteArray?,
+    val handshakeSent: Boolean
+)
+
+/** Result of a delivery attempt, used to drive retry policy. */
+sealed class DeliveryResult {
+    object Delivered : DeliveryResult()
+    object QueuedForRetry : DeliveryResult()
+    data class Failed(val reason: String, val permanent: Boolean = false) : DeliveryResult()
+}
+
+fun ByteArray.shortHash(): String = Bytes.toHex(this).take(16)
+
+fun ByteArray.toB64(): String = Bytes.toBase64Url(this)
+
+fun String.b64ToBytes(): ByteArray = Bytes.fromBase64Url(this)

@@ -1,5 +1,5 @@
-<!-- res/xml/file_paths.xml -->
 <?xml version="1.0" encoding="utf-8"?>
+<!-- res/xml/file_paths.xml -->
 <paths>
     <files-path name="ping_files" path="ping_files/" />
     <cache-path name="thumbnails" path="thumbnails/" />

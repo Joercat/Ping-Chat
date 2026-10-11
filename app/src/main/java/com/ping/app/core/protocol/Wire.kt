@@ -25,7 +25,7 @@ object Wire {
     const val ATTACHMENT_CHUNK_BYTES = 64 * 1024
     const val MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
-    private val PADDING_BUCKETS = intArrayOf(256, 1024, 4096, 16 * 1024, 64 * 1024, 256 * 1024, MAX_ENVELOPE_BYTES)
+    private val PADDING_BUCKETS = intArrayOf(256, 1024, 4096, 16 * 1024, 64 * 1024, 128 * 1024, 256 * 1024, MAX_ENVELOPE_BYTES)
 
     /** Mailbox identifier derived from the identity DH key: the relay never sees a phone number. */
     fun mailboxId(dhIdentityKey: ByteArray): ByteArray {
@@ -137,6 +137,8 @@ object Wire {
     class HandshakeInit(
         val senderSigningKey: ByteArray,
         val senderDhIdentity: ByteArray,
+        /** Proves the sender owns both keys; without it a stranger could borrow a display name. */
+        val senderBindingSignature: ByteArray,
         val ephemeralKey: ByteArray,
         val signedPreKeyId: Int,
         val oneTimePreKeyId: Int?,
@@ -144,11 +146,13 @@ object Wire {
     ) {
         init {
             require(senderSigningKey.size == 32 && senderDhIdentity.size == 32 && ephemeralKey.size == 32)
+            require(senderBindingSignature.size == 64) { "binding signature must be 64 bytes" }
         }
 
         fun encode(): ByteArray = BufWriter(256)
             .bytes(senderSigningKey)
             .bytes(senderDhIdentity)
+            .blob(senderBindingSignature)
             .bytes(ephemeralKey)
             .u32(signedPreKeyId)
             .varint(oneTimePreKeyId ?: NO_PREKEY)
@@ -162,6 +166,7 @@ object Wire {
                 val reader = BufReader(bytes)
                 val signing = reader.bytes(32)
                 val dh = reader.bytes(32)
+                val binding = reader.blob()
                 val ephemeral = reader.bytes(32)
                 val spkId = reader.u32()
                 val otkId = reader.varint()
@@ -170,6 +175,7 @@ object Wire {
                 return HandshakeInit(
                     senderSigningKey = signing,
                     senderDhIdentity = dh,
+                    senderBindingSignature = binding,
                     ephemeralKey = ephemeral,
                     signedPreKeyId = spkId,
                     oneTimePreKeyId = if (otkId == NO_PREKEY) null else otkId,

@@ -4,9 +4,6 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.serialization")
-    id("com.google.devtools.ksp")
-    id("kotlin-parcelize")
 }
 
 // Optional release signing. Set up keystore.properties (see docs/BUILD.md) or
@@ -30,8 +27,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
-
-        ksp { arg("room.schemaLocation", "$projectDir/schemas") }
     }
 
     signingConfigs {
@@ -55,8 +50,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // R8 with a hand-written rule set is a needle in the foot for a build that
+            // cannot be smoke-tested here; the APK ships unobfuscated on purpose.
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             val releaseConfig = signingConfigs.findByName("release")
             signingConfig = if (releaseConfig?.storeFile?.exists() == true) {
@@ -83,9 +80,9 @@ android {
         jvmTarget = "17"
         freeCompilerArgs += listOf(
             "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi",
-            "-opt-in=kotlinx.serialization.ExperimentalSerializationApi",
             "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
             "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi",
+            "-opt-in=androidx.compose.foundation.layout.ExperimentalLayoutApi",
         )
     }
 
@@ -119,7 +116,7 @@ android {
 }
 
 dependencies {
-    // Core
+    // AndroidX core + lifecycle
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
@@ -137,33 +134,25 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.animation:animation")
-    implementation("androidx.navigation:navigation-compose:2.7.7")
 
-    // Persistence
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
-    implementation("androidx.datastore:datastore-preferences:1.1.1")
-    implementation("androidx.sqlite:sqlite-ktx:2.4.0")
+    // Storage: SQLCipher is the only native dependency, and it is the one that
+    // encrypts the whole database file on top of the per-column sealing.
     implementation("net.zetetic:sqlcipher-android:4.6.1")
+    implementation("androidx.sqlite:sqlite:2.4.0")
 
-    // Network (relay + local socket transport)
+    // Network (relay + local peer-to-peer sockets)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // Crypto
+    // Crypto (BouncyCastle provides X25519/Ed25519 on older devices)
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
-    // Serialization
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // UI helpers
-    implementation("io.coil-kt:coil-compose:2.6.0")
+    // QR codes: generation for sharing, scanning for adding contacts
     implementation("com.google.zxing:core:3.5.3")
-    implementation("androidx.camera:camera-core:1.3.4")
-    implementation("androidx.camera:camera-camera2:1.3.4")
-    implementation("androidx.camera:camera-lifecycle:1.3.4")
-    implementation("androidx.camera:camera-view:1.3.4")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
+    // Optional app lock
     implementation("androidx.biometric:biometric:1.1.0")
 
     // Tests

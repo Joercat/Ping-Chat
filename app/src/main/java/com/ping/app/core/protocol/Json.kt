@@ -64,6 +64,12 @@ class JsonObject(private val value: JsonValue.Obj) {
         else -> throw JsonException("field '$key' is not a number")
     }
 
+    fun intOrNull(key: String): Int? = when (val v = value[key]) {
+        null, is JsonValue.Null -> null
+        is JsonValue.Num -> v.toInt()
+        else -> throw JsonException("field '$key' is not a number")
+    }
+
     fun bool(key: String, default: Boolean = false): Boolean = when (val v = value[key]) {
         null, is JsonValue.Null -> default
         is JsonValue.Bool -> v.value

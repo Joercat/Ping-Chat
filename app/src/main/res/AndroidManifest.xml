@@ -64,6 +64,31 @@
             </intent-filter>
         </activity>
 
+        <!-- Keeps the long poll (or a local-network socket) open in the background. -->
+        <service
+            android:name=".service.PingService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the end-to-end encrypted relay connection open so messages arrive while the app is in the background." />
+        </service>
+
+        <!-- \"Reply\" and \"Mark read\" straight from a notification. -->
+        <receiver
+            android:name=".service.ReplyReceiver"
+            android:exported="false" />
+
+        <!-- Brings the connection back after a reboot or an app update. -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

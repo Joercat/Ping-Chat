@@ -57,14 +57,40 @@ object RelayApi {
 
     fun bundlePath(mailbox: ByteArray): String = "/v1/bundle?mailbox=" + Bytes.toBase64Url(mailbox)
 
-    /** Parses a bundle response; returns null when the relay does not know this mailbox yet. */
+    /**
+     * Parses a bundle response.
+     *
+     * Returns null when the relay does not know the mailbox yet. Every signature is checked again
+     * on the client: a hostile relay can withhold a bundle (denial of service) but can never make
+     * the client talk to the wrong keys.
+     */
     fun parseBundleResponse(body: String): PreKeyBundle? {
         val json = JsonObject(body)
         if (!json.bool("ok", true)) return null
-        val encoded = json.optStr("bundle") ?: return null
-        val bundle = BundleCodec.decode(Bytes.fromBase64Url(encoded))
+        val fields = json.objectOrNull("bundle") ?: return null
+        val bundle = PreKeyBundle(
+            signingKey = Bytes.fromBase64Url(fields.str("signingKey")),
+            dhIdentityKey = Bytes.fromBase64Url(fields.str("dhIdentityKey")),
+            dhBindingSignature = Bytes.fromBase64Url(fields.str("dhBinding")),
+            signedPreKeyId = fields.int("signedPreKeyId"),
+            signedPreKey = Bytes.fromBase64Url(fields.str("signedPreKey")),
+            signedPreKeySignature = Bytes.fromBase64Url(fields.str("signedPreKeySignature")),
+            oneTimePreKeyId = fields.intOrNull("oneTimePreKeyId"),
+            oneTimePreKey = fields.optStr("oneTimePreKey")?.let { Bytes.fromBase64Url(it) },
+            publishedAt = fields.long("publishedAt")
+        )
         if (!bundle.verify()) throw WireFormatException("relay returned a bundle with an invalid signature")
+        if ((bundle.oneTimePreKeyId == null) != (bundle.oneTimePreKey == null)) {
+            throw WireFormatException("relay returned a half one-time pre-key")
+        }
         return bundle
+    }
+
+    /** The relay hands out a fresh single-use nonce with each successful poll. */
+    fun parseNextNonce(body: String): ByteArray? = try {
+        JsonObject(body).optStr("nextNonce")?.let { Bytes.fromBase64Url(it) }
+    } catch (e: Exception) {
+        null
     }
 
     fun sendRequest(envelope: Wire.Envelope): String = Json.write(
@@ -95,13 +121,36 @@ object RelayApi {
         )
     )
 
-    /** Returns the envelopes the relay handed over. */
-    fun parsePollResponse(body: String): List<Wire.Envelope> {
+    /** One envelope as the relay handed it over, with the id needed to acknowledge it. */
+    class PolledEnvelope(val id: String, val bytes: ByteArray) {
+        fun decode(): Wire.Envelope = Wire.Envelope.decode(bytes)
+    }
+
+    /**
+     * The relay's envelope id is the first 22 characters of the base64url of the SHA-256 of the
+     * envelope, so a client can calculate it even if the relay omits it.
+     */
+    fun envelopeId(bytes: ByteArray): String = Bytes.toBase64Url(Bytes.sha256(bytes)).take(22)
+
+    /**
+     * Returns the envelopes the relay handed over.
+     *
+     * Both shapes are accepted: `{"id": ..., "data": ...}` objects (what current relays send) and
+     * plain base64url strings (older relays), in which case the id is derived from the bytes.
+     */
+    fun parsePollResponse(body: String): List<PolledEnvelope> {
         val json = JsonObject(body)
         if (!json.bool("ok", true)) throw WireFormatException("relay refused the poll")
         return json.array("envelopes").map { value ->
-            val encoded = value.optString() ?: throw WireFormatException("malformed envelope entry")
-            Wire.Envelope.decode(Bytes.fromBase64Url(encoded))
+            if (value is JsonValue.Obj) {
+                val bytes = Bytes.fromBase64Url(value["data"]?.optString() ?: throw WireFormatException("malformed envelope entry"))
+                val id = value["id"]?.optString() ?: envelopeId(bytes)
+                PolledEnvelope(id, bytes)
+            } else {
+                val encoded = value.optString() ?: throw WireFormatException("malformed envelope entry")
+                val bytes = Bytes.fromBase64Url(encoded)
+                PolledEnvelope(envelopeId(bytes), bytes)
+            }
         }
     }
 

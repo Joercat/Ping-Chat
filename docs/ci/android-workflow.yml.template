@@ -1,3 +1,16 @@
+# Ping — Android CI
+#
+# This file is a TEMPLATE. It lives outside .github/workflows on purpose: the machine that
+# pushed it is not allowed to write workflow files. To switch CI on, either
+#   • GitHub → Actions → New workflow → "set up a workflow yourself", paste this whole file, or
+#   • copy it to .github/workflows/android.yml with a GitHub token that has `workflow` scope.
+#
+# What it does:
+#   1. runs the crypto/protocol self-tests (hundreds of assertions, plain JUnit, no device)
+#   2. builds a debug APK and a release APK
+#   3. uploads both as artifacts
+#   4. on `main`, refreshes a rolling "latest" release you can download straight from the phone
+
 name: Android CI
 
 on:
@@ -32,20 +45,45 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Set up Node (for the relay end-to-end suite)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
           validate-wrappers: false
 
-      - name: Unit tests (crypto / protocol)
-        run: gradle --no-daemon testDebugUnitTest
+      - name: Make the wrapper executable
+        run: chmod +x gradlew
+
+      - name: Start the relay
+        run: |
+          node server/node/server.js --port 8080 --host 127.0.0.1 --data /tmp/ping-relay.json &
+          for attempt in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/v1/health > /dev/null; then
+              echo "relay is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "relay did not start"; exit 1
+
+      - name: Unit tests (crypto, protocol, live relay)
+        env:
+          PING_RELAY: http://127.0.0.1:8080
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Stop the relay
+        if: always()
+        run: pkill -f "node server/node/server.js" || true
 
       - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: Build release APK
-        run: gradle --no-daemon assembleRelease
+        run: ./gradlew --no-daemon --stacktrace assembleRelease
 
       - name: Rename artifacts
         run: |

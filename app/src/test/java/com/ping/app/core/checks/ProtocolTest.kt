@@ -176,6 +176,7 @@ object ProtocolTest {
         val init = Wire.HandshakeInit(
             senderSigningKey = Bytes.random(32),
             senderDhIdentity = Bytes.random(32),
+            senderBindingSignature = Bytes.random(64),
             ephemeralKey = Bytes.random(32),
             signedPreKeyId = 12,
             oneTimePreKeyId = 34,
@@ -184,11 +185,12 @@ object ProtocolTest {
         val decoded = Wire.HandshakeInit.decode(init.encode())
         check(decoded.senderSigningKey.contentEquals(init.senderSigningKey), "handshake sender key")
         check(decoded.ephemeralKey.contentEquals(init.ephemeralKey), "handshake ephemeral key")
+        check(decoded.senderBindingSignature.contentEquals(init.senderBindingSignature), "handshake binding signature")
         checkEquals(12, decoded.signedPreKeyId, "signed pre-key id")
         checkEquals(34, decoded.oneTimePreKeyId, "one-time pre-key id")
         check(decoded.firstMessage.ciphertext.contentEquals(message.ciphertext), "handshake carries the first message")
 
-        val noPreKey = Wire.HandshakeInit(Bytes.random(32), Bytes.random(32), Bytes.random(32), 1, null, message)
+        val noPreKey = Wire.HandshakeInit(Bytes.random(32), Bytes.random(32), Bytes.random(64), Bytes.random(32), 1, null, message)
         checkEquals(null, Wire.HandshakeInit.decode(noPreKey.encode()).oneTimePreKeyId, "absent one-time pre-key")
     }
 
@@ -271,26 +273,37 @@ object ProtocolTest {
         checkEquals(1, json.int("signedPreKeyId"), "register carries signed pre-key id")
 
         val bundle = PreKeyBundle.create(identity, spk, PreKeyBundle.newOneTimePreKey(3), 7L)
-        val response = Json.write(
-            Json.obj(
-                "ok" to Json.bool(true),
-                "bundle" to Json.str(Bytes.toBase64Url(BundleCodec.encode(bundle)))
-            )
-        )
-        val parsed = RelayApi.parseBundleResponse(response)
+        val parsed = RelayApi.parseBundleResponse(bundleJson(bundle))
         check(parsed != null && parsed.verify(), "bundle response parses")
+        checkEquals(3, parsed!!.oneTimePreKeyId, "one-time pre-key id from the relay")
         checkEquals(null, RelayApi.parseBundleResponse("""{"ok":false,"error":"unknown_mailbox"}"""), "missing bundle returns null")
+        checkEquals(
+            Bytes.toBase64Url(Bytes.utf8("next")),
+            RelayApi.parseNextNonce("""{"ok":true,"nextNonce":"${Bytes.toBase64Url(Bytes.utf8("next"))}"}""")?.let { Bytes.toBase64Url(it) },
+            "next nonce parses"
+        )
+        checkEquals(null, RelayApi.parseNextNonce("""{}"""), "absent next nonce")
 
         expectThrows<WireFormatException>("relay cannot inject an unsigned bundle") {
-            val evil = BundleCodec.encode(
-                PreKeyBundle(
-                    identity.signing.publicKey, identity.dh.publicKey, identity.dhBinding,
-                    1, X25519KeyPair.generate().publicKey, ByteArray(64), null, null, 8L
-                )
+            val evil = PreKeyBundle(
+                identity.signing.publicKey, identity.dh.publicKey, identity.dhBinding,
+                1, X25519KeyPair.generate().publicKey, ByteArray(64), null, null, 8L
             )
-            RelayApi.parseBundleResponse(
-                Json.write(Json.obj("ok" to Json.bool(true), "bundle" to Json.str(Bytes.toBase64Url(evil))))
+            RelayApi.parseBundleResponse(bundleJson(evil))
+        }
+        expectThrows<WireFormatException>("relay cannot inject a swapped identity") {
+            val evil = PreKeyBundle(
+                identity.signing.publicKey, X25519KeyPair.generate().publicKey, identity.dhBinding,
+                1, spk.keyPair.publicKey, spk.signature, null, null, 8L
             )
+            RelayApi.parseBundleResponse(bundleJson(evil))
+        }
+        expectThrows<WireFormatException>("half one-time pre-key rejected") {
+            val b = PreKeyBundle(
+                identity.signing.publicKey, identity.dh.publicKey, identity.dhBinding,
+                spk.id, spk.keyPair.publicKey, spk.signature, 9, null, 8L
+            )
+            RelayApi.parseBundleResponse(bundleJson(b))
         }
 
         val nonce = Bytes.random(32)
@@ -317,8 +330,28 @@ object ProtocolTest {
         )
         val envelopes = RelayApi.parsePollResponse(Json.write(pollJson.raw()))
         checkEquals(1, envelopes.size, "poll response parses envelopes")
-        checkEquals(envelope.sessionTag!!.toList(), envelopes[0].sessionTag!!.toList(), "envelope round trip through JSON")
+        val decodedEnvelope = envelopes[0].decode()
+        checkEquals(envelope.sessionTag!!.toList(), decodedEnvelope.sessionTag!!.toList(), "envelope round trip through JSON")
+        check(envelopes[0].id.isNotBlank(), "poll entry carries an id")
     }
+
+    /** Mirrors exactly what the relay sends back (JSON fields, not the binary bundle). */
+    private fun bundleJson(bundle: PreKeyBundle): String = Json.write(
+        Json.obj(
+            "ok" to Json.bool(true),
+            "bundle" to Json.obj(
+                "signingKey" to Json.str(Bytes.toBase64Url(bundle.signingKey)),
+                "dhIdentityKey" to Json.str(Bytes.toBase64Url(bundle.dhIdentityKey)),
+                "dhBinding" to Json.str(Bytes.toBase64Url(bundle.dhBindingSignature)),
+                "signedPreKeyId" to Json.num(bundle.signedPreKeyId),
+                "signedPreKey" to Json.str(Bytes.toBase64Url(bundle.signedPreKey)),
+                "signedPreKeySignature" to Json.str(Bytes.toBase64Url(bundle.signedPreKeySignature)),
+                "publishedAt" to Json.num(bundle.publishedAt),
+                "oneTimePreKeyId" to bundle.oneTimePreKeyId?.let { Json.num(it) },
+                "oneTimePreKey" to bundle.oneTimePreKey?.let { Json.str(Bytes.toBase64Url(it)) }
+            )
+        )
+    )
 
     private fun hostileInput() {
         // A malicious relay answering with nonsense must never crash the client.

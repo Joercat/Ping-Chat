@@ -1,5 +1,5 @@
-<!-- res/values/strings.xml -->
 <?xml version="1.0" encoding="utf-8"?>
+<!-- res/values/strings.xml -->
 <resources>
     <string name="app_name">Ping</string>
     

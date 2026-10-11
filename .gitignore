@@ -8,7 +8,6 @@ local.properties
 .idea/
 *.iml
 .gradle/
-gradle-wrapper.jar
 .DS_Store
 Thumbs.db
 
@@ -18,3 +17,7 @@ app/schemas/
 *.apk
 *.aab
 out/
+
+# Cloudflare wrangler local dev state
+.wrangler/
+node_modules/
