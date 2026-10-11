@@ -1,9 +1,12 @@
 # Ping — Android CI
 #
-# This file is a TEMPLATE. It lives outside .github/workflows on purpose: the machine that
-# pushed it is not allowed to write workflow files. To switch CI on, either
-#   • GitHub → Actions → New workflow → "set up a workflow yourself", paste this whole file, or
-#   • copy it to .github/workflows/android.yml with a GitHub token that has `workflow` scope.
+# THIS FILE IS THE WORKFLOW. Copy it verbatim over .github/workflows/android.yml in the GitHub web
+# editor (open that file, pencil icon, select all, paste, commit). It lives here in docs/ci/
+# because automated tooling is not allowed to write workflow files — the comments below are the
+# only difference from the real file, and they cost nothing.
+#
+# Requires: android-actions/setup-android@v4 or newer. @v3 runs `sdkmanager tools`, which Google
+# has retired, so it fails with exit code 1 before any project step runs.
 #
 # What it does:
 #   1. runs the crypto/protocol self-tests (hundreds of assertions, plain JUnit, no device)
