@@ -1,0 +1,32 @@
+# Ping relay — Cloudflare Workers + Durable Objects.
+#
+# Free plan friendly: no credit card, no server to babysit, and the free tier
+# allows SQLite-backed Durable Objects, which is what this worker uses.
+#
+#   cd server/cloudflare
+#   npm install
+#   npx wrangler login
+#   npx wrangler deploy
+#
+# After deploying, put the printed https://<name>.<subdomain>.workers.dev URL
+# into the app (Settings → Relay address).
+
+name = "ping-relay"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+workers_dev = true
+
+# One Durable Object per mailbox. It holds the (encrypted) envelopes in memory
+# and writes only public pre-key material to storage.
+[[durable_objects.bindings]]
+name = "MAILBOX"
+class_name = "Mailbox"
+
+# SQLite-backed classes are the ones available on the Workers free plan.
+# On a paid plan you may use `new_classes = ["Mailbox"]` instead.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Mailbox"]
+
+[observability]
+enabled = true

@@ -1,4 +1,3 @@
-// MainActivity.kt
 package com.ping.app
 
 import android.Manifest
@@ -7,478 +6,491 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.widget.Toast
-import androidx.activity.ComponentActivity
+import android.view.WindowManager
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.*
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.navigation.NavHostController
-import androidx.navigation.NavType
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
-import androidx.navigation.navDeepLink
-import com.ping.app.core.encryption.SecureStorage
-import com.ping.app.services.PingMessagingService
-import com.ping.app.services.PresenceService
-import com.ping.app.ui.screens.auth.AuthScreen
-import com.ping.app.ui.screens.chat.ChatScreen
-import com.ping.app.ui.screens.conversations.ConversationsScreen
-import com.ping.app.ui.screens.newchat.NewChatScreen
-import com.ping.app.ui.screens.profile.ProfileScreen
-import com.ping.app.ui.screens.settings.*
-import com.ping.app.ui.screens.splash.SplashScreen
-import com.ping.app.ui.theme.DarkBackground
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import com.ping.app.di.AppGraph
+import com.ping.app.di.StorageState
+import com.ping.app.service.PingService
+import com.ping.app.ui.PingController
+import com.ping.app.ui.screens.AddContactScreen
+import com.ping.app.ui.screens.ChatScreen
+import com.ping.app.ui.screens.ContactScreen
+import com.ping.app.ui.screens.GroupInfoScreen
+import com.ping.app.ui.screens.HomeScreen
+import com.ping.app.ui.screens.NewGroupScreen
+import com.ping.app.ui.screens.OnboardingScreen
+import com.ping.app.ui.screens.PickedAttachment
+import com.ping.app.ui.screens.SettingsScreen
 import com.ping.app.ui.theme.PingTheme
 import com.ping.app.ui.theme.PrimaryPurple
-import com.ping.app.ui.theme.TextPrimary
 import com.ping.app.ui.theme.TextSecondary
-import dagger.hilt.android.AndroidEntryPoint
-import javax.inject.Inject
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
-@AndroidEntryPoint
-class MainActivity : ComponentActivity() {
-    
-    @Inject
-    lateinit var secureStorage: SecureStorage
-    
-    private var keepSplashScreen = true
-    private var pendingConversationId: String? = null
-    
-    // Navigation controller reference for deep linking
-    private var navController: NavHostController? = null
-    
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val allGranted = permissions.all { it.value }
-        if (allGranted) {
-            startServices()
-        } else {
-            // Show which permissions were denied
-            val deniedPermissions = permissions.filter { !it.value }.keys
-            if (deniedPermissions.isNotEmpty()) {
-                Toast.makeText(
-                    this,
-                    "Some features may not work without permissions",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-            // Still start services for basic functionality
-            startServices()
-        }
-    }
-    
+/** Where the app was asked to go from the outside. */
+private sealed interface DeepLink {
+    /** `ping://chat/<peer hash>` or the conversation carried by a notification. */
+    data class Chat(val conversationId: String) : DeepLink
+
+    /** `ping://chat/peer:<peer hash>`: we know the contact but not the conversation yet. */
+    data class ChatWithPeer(val peerHash: String) : DeepLink
+
+    /** `ping://add/<code>` */
+    data class Add(val code: String) : DeepLink
+}
+
+/** Screens are a small enum, so there is no need to pull in a navigation library. */
+private sealed interface Screen {
+    data object Home : Screen
+    data class Chat(val conversationId: String) : Screen
+    data object AddContact : Screen
+    data class Contact(val peerHash: String) : Screen
+    data class GroupInfo(val groupId: String) : Screen
+    data object NewGroup : Screen
+    data object Settings : Screen
+}
+
+class MainActivity : FragmentActivity() {
+
+    private lateinit var graph: AppGraph
+    private val deepLink = MutableStateFlow<DeepLink?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Install splash screen (Android 12+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val splashScreen = installSplashScreen()
-            splashScreen.setKeepOnScreenCondition { keepSplashScreen }
-        }
-        
         super.onCreate(savedInstanceState)
-        
-        // Handle initial intent
-        pendingConversationId = extractConversationIdFromIntent(intent)
-        
+        graph = (application as PingApplication).graph
+        applyScreenshotGuard()
+        // The flag has to follow the setting while the app is running, not only at launch.
+        lifecycleScope.launch {
+            graph.settings.state.map { it.screenshotGuard }.distinctUntilChanged().collect { applyScreenshotGuard() }
+        }
+        deepLink.value = parseDeepLink(intent)
         setContent {
             PingTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    var showCustomSplash by remember { mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.S) }
-                    var isUserLoggedIn by remember { mutableStateOf<Boolean?>(null) }
-                    
-                    val navControllerState = rememberNavController()
-                    
-                    // Store nav controller reference
-                    LaunchedEffect(navControllerState) {
-                        navController = navControllerState
-                    }
-                    
-                    // Check login status
-                    LaunchedEffect(Unit) {
-                        isUserLoggedIn = checkUserLoggedIn()
-                        keepSplashScreen = false
-                    }
-                    
-                    // Handle pending navigation after login check
-                    LaunchedEffect(isUserLoggedIn, pendingConversationId) {
-                        if (isUserLoggedIn == true && pendingConversationId != null) {
-                            navControllerState.navigate(Screen.Chat.createRoute(pendingConversationId!!)) {
-                                popUpTo(Screen.Conversations.route)
-                            }
-                            pendingConversationId = null
-                        }
-                    }
-                    
-                    if (showCustomSplash) {
-                        SplashScreen(
-                            onSplashComplete = { loggedIn ->
-                                showCustomSplash = false
-                                isUserLoggedIn = loggedIn
-                            }
-                        )
-                    } else {
-                        isUserLoggedIn?.let { loggedIn ->
-                            PingNavHost(
-                                navController = navControllerState,
-                                startDestination = if (loggedIn) Screen.Conversations.route else Screen.Auth.route,
-                                onAuthComplete = {
-                                    checkAndRequestPermissions()
-                                }
-                            )
-                        }
-                    }
-                }
+                PingRoot(graph = graph, deepLink = deepLink)
             }
         }
     }
-    
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        
-        val conversationId = extractConversationIdFromIntent(intent)
-        if (conversationId != null) {
-            navController?.let { nav ->
-                nav.navigate(Screen.Chat.createRoute(conversationId)) {
-                    popUpTo(Screen.Conversations.route) {
-                        saveState = true
-                    }
-                    launchSingleTop = true
-                    restoreState = true
-                }
-            } ?: run {
-                pendingConversationId = conversationId
-            }
-        }
+        deepLink.value = parseDeepLink(intent)
     }
-    
-    private fun extractConversationIdFromIntent(intent: Intent?): String? {
-        if (intent == null) return null
-        
-        // From notification extras
-        intent.getStringExtra(EXTRA_CONVERSATION_ID)?.let { return it }
-        
-        // From deep link
-        intent.data?.let { uri ->
-            if (uri.scheme == "ping" && uri.host == "chat") {
-                return uri.getQueryParameter("id") ?: uri.lastPathSegment
-            }
-        }
-        
-        return null
-    }
-    
-    private fun checkUserLoggedIn(): Boolean {
-        return try {
-            secureStorage.getUserId() != null
-        } catch (e: Exception) {
-            false
-        }
-    }
-    
-    private fun checkAndRequestPermissions() {
-        val permissions = mutableListOf<String>()
-        
-        // Notification permission (Android 13+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-        
-        // Media permissions (Android 13+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
-            }
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                permissions.add(Manifest.permission.READ_MEDIA_VIDEO)
-            }
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_AUDIO)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                permissions.add(Manifest.permission.READ_MEDIA_AUDIO)
-            }
-        } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-            }
-        }
-        
-        // Camera permission - FIXED: Now requested at runtime
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            permissions.add(Manifest.permission.CAMERA)
-        }
-        
-        // Audio recording permission - FIXED: Now requested at runtime
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            permissions.add(Manifest.permission.RECORD_AUDIO)
-        }
-        
-        if (permissions.isNotEmpty()) {
-            permissionLauncher.launch(permissions.toTypedArray())
-        } else {
-            startServices()
-        }
-    }
-    
-    private fun startServices() {
-        try {
-            // Start messaging service
-            val messagingServiceIntent = Intent(this, PingMessagingService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(messagingServiceIntent)
-            } else {
-                startService(messagingServiceIntent)
-            }
-            
-            // Start presence service
-            val presenceServiceIntent = Intent(this, PresenceService::class.java)
-            startService(presenceServiceIntent)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-    
-    companion object {
-        const val EXTRA_CONVERSATION_ID = "extra_conversation_id"
-        const val EXTRA_USER_ID = "extra_user_id"
-        const val ACTION_OPEN_CHAT = "com.ping.app.OPEN_CHAT"
-    }
-}
 
-// Navigation routes
-sealed class Screen(val route: String) {
-    object Auth : Screen("auth")
-    object Conversations : Screen("conversations")
-    object Chat : Screen("chat/{conversationId}") {
-        fun createRoute(conversationId: String) = "chat/$conversationId"
+    private fun applyScreenshotGuard() {
+        val secure = runCatching { graph.settings.current.screenshotGuard }.getOrDefault(true)
+        if (secure) {
+            window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
     }
-    object NewChat : Screen("new_chat")
-    object Profile : Screen("profile/{userId}") {
-        fun createRoute(userId: String?) = "profile/${userId ?: "me"}"
+
+    private fun parseDeepLink(intent: Intent?): DeepLink? {
+        if (intent == null) return null
+        intent.getStringExtra("conversation_id")?.let { if (it.isNotBlank()) return DeepLink.Chat(it) }
+        val data: Uri = intent.data ?: return null
+        if (data.scheme != "ping") return null
+        val value = data.lastPathSegment?.trim().orEmpty()
+        if (value.isEmpty()) return null
+        return when (data.host) {
+            "chat" ->
+                if (value.startsWith("peer:")) DeepLink.ChatWithPeer(value.removePrefix("peer:"))
+                else DeepLink.Chat(value)
+            "add" -> DeepLink.Add(value)
+            else -> null
+        }
     }
-    object MyProfile : Screen("profile/me")
-    object Settings : Screen("settings")
-    object PrivacySettings : Screen("settings/privacy")
-    object NotificationSettings : Screen("settings/notifications")
-    object StorageSettings : Screen("settings/storage")
-    object BlockedContacts : Screen("settings/blocked")
-    object Help : Screen("settings/help")
-    object About : Screen("settings/about")
 }
 
 @Composable
-fun PingNavHost(
-    navController: NavHostController,
-    startDestination: String,
-    onAuthComplete: () -> Unit
-) {
-    NavHost(
-        navController = navController,
-        startDestination = startDestination,
-        enterTransition = {
-            slideIntoContainer(
-                towards = AnimatedContentTransitionScope.SlideDirection.Left,
-                animationSpec = tween(300)
-            )
-        },
-        exitTransition = {
-            slideOutOfContainer(
-                towards = AnimatedContentTransitionScope.SlideDirection.Left,
-                animationSpec = tween(300)
-            )
-        },
-        popEnterTransition = {
-            slideIntoContainer(
-                towards = AnimatedContentTransitionScope.SlideDirection.Right,
-                animationSpec = tween(300)
-            )
-        },
-        popExitTransition = {
-            slideOutOfContainer(
-                towards = AnimatedContentTransitionScope.SlideDirection.Right,
-                animationSpec = tween(300)
+private fun PingRoot(graph: AppGraph, deepLink: MutableStateFlow<DeepLink?>) {
+    val context = LocalContext.current
+    val controller = remember { PingController(graph) }
+    val storage by graph.storage.collectAsStateWithLifecycle()
+    val settings by controller.settings.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Ask for the notification permission once we are far enough along to have something to say.
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(storage, settings.onboardingComplete) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            storage is StorageState.Ready &&
+            settings.onboardingComplete &&
+            settings.notificationsEnabled &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    when (val state = storage) {
+        is StorageState.Loading -> LoadingScreen()
+        is StorageState.Failed -> FailureScreen(state.reason)
+        is StorageState.Ready -> {
+            if (!settings.onboardingComplete) {
+                OnboardingScreen(controller = controller) {
+                    graph.engine.start()
+                    PingService.start(context)
+                }
+            } else {
+                var unlocked by remember { mutableStateOf(!settings.appLock) }
+                DisposableEffect(lifecycleOwner, settings.appLock) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_STOP) unlocked = false
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
+                if (settings.appLock && !unlocked) {
+                    UnlockScreen(
+                        onUnlock = { unlocked = true },
+                        onUnlockWithoutAuth = {
+                            controller.setAppLock(false)
+                            unlocked = true
+                        }
+                    )
+                } else {
+                    MainNavigation(controller = controller, deepLink = deepLink)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MainNavigation(controller: PingController, deepLink: MutableStateFlow<DeepLink?>) {
+    val context = LocalContext.current
+    val graph = controller.graph
+    var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+    var picked by remember { mutableStateOf<PickedAttachment?>(null) }
+    val notes by controller.notes.collectAsStateWithLifecycle()
+    val link by deepLink.collectAsStateWithLifecycle()
+
+    // Tell the engine which conversation is on screen, so it stays quiet about that one. Only while
+    // the app is really in front: a chat left open in the background must still notify.
+    val activeConversation = (screen as? Screen.Chat)?.conversationId
+    val chatLifecycle = LocalLifecycleOwner.current
+    DisposableEffect(chatLifecycle, activeConversation) {
+        graph.activeConversation.value =
+            if (chatLifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) activeConversation else null
+        val observer = LifecycleEventObserver { _, event ->
+            graph.activeConversation.value = when (event) {
+                Lifecycle.Event.ON_RESUME -> activeConversation
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> null
+                else -> graph.activeConversation.value
+            }
+        }
+        chatLifecycle.lifecycle.addObserver(observer)
+        onDispose {
+            chatLifecycle.lifecycle.removeObserver(observer)
+            if (graph.activeConversation.value == activeConversation) graph.activeConversation.value = null
+        }
+    }
+
+    LaunchedEffect(notes) {
+        if (notes.isNotEmpty()) {
+            delay(2_800)
+            graph.consumeNotes()
+        }
+    }
+
+    LaunchedEffect(link) {
+        when (val target = link) {
+            null -> Unit
+            is DeepLink.Chat -> {
+                screen = Screen.Chat(target.conversationId)
+                deepLink.value = null
+            }
+            is DeepLink.ChatWithPeer -> {
+                controller.resolveConversation(target.peerHash) { conversation ->
+                    if (conversation != null) {
+                        deepLink.value = null
+                        screen = Screen.Chat(conversation.id)
+                    }
+                }
+            }
+            is DeepLink.Add -> {
+                controller.addContact(target.code)
+                deepLink.value = null
+                screen = Screen.Home
+            }
+        }
+    }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            picked = PickedAttachment(
+                uri = uri,
+                name = context.displayNameOf(uri) ?: "attachment",
+                mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
             )
         }
-    ) {
-        // Auth Screen
-        composable(Screen.Auth.route) {
-            AuthScreen(
-                onAuthComplete = {
-                    onAuthComplete()
-                    navController.navigate(Screen.Conversations.route) {
-                        popUpTo(Screen.Auth.route) { inclusive = true }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        when (val current = screen) {
+            is Screen.Home -> HomeScreen(
+                controller = controller,
+                onOpenChat = { screen = Screen.Chat(it.conversation.id) },
+                onAddContact = { screen = Screen.AddContact },
+                onSettings = { screen = Screen.Settings },
+                onShowMyCode = { screen = Screen.AddContact },
+                onNewGroup = { screen = Screen.NewGroup }
+            )
+
+            is Screen.Chat -> ChatScreen(
+                controller = controller,
+                conversationId = current.conversationId,
+                onBack = { screen = Screen.Home },
+                onOpenContact = { peerHash -> screen = Screen.Contact(peerHash) },
+                onOpenGroupInfo = { groupId -> screen = Screen.GroupInfo(groupId) },
+                onPickAttachment = { picker.launch(arrayOf("*/*")) },
+                pickedAttachment = picked,
+                onPickedAttachmentHandled = { picked = null }
+            )
+
+            is Screen.AddContact -> AddContactScreen(
+                controller = controller,
+                onBack = { screen = Screen.Home },
+                onAdded = { screen = Screen.Home }
+            )
+
+            is Screen.Contact -> ContactScreen(
+                controller = controller,
+                peerHash = current.peerHash,
+                onBack = { screen = Screen.Home }
+            )
+
+            is Screen.NewGroup -> NewGroupScreen(
+                controller = controller,
+                onBack = { screen = Screen.Home },
+                onCreated = { groupId ->
+                    controller.resolveGroupConversation(groupId) { conversationId ->
+                        screen = if (conversationId != null) Screen.Chat(conversationId) else Screen.Home
                     }
                 }
             )
-        }
-        
-        // Conversations Screen
-        composable(Screen.Conversations.route) {
-            ConversationsScreen(
-                onNavigateToChat = { conversationId ->
-                    navController.navigate(Screen.Chat.createRoute(conversationId))
-                },
-                onNavigateToNewChat = {
-                    navController.navigate(Screen.NewChat.route)
-                },
-                onNavigateToSettings = {
-                    navController.navigate(Screen.Settings.route)
-                }
+
+            is Screen.GroupInfo -> GroupInfoScreen(
+                controller = controller,
+                groupId = current.groupId,
+                onBack = { screen = Screen.Home },
+                onLeft = { screen = Screen.Home }
+            )
+
+            is Screen.Settings -> SettingsScreen(
+                controller = controller,
+                onBack = { screen = Screen.Home }
             )
         }
-        
-        // Chat Screen with deep link support
-        composable(
-            route = Screen.Chat.route,
-            arguments = listOf(
-                navArgument("conversationId") { type = NavType.StringType }
-            ),
-            deepLinks = listOf(
-                navDeepLink { uriPattern = "ping://chat/{conversationId}" }
-            )
-        ) { backStackEntry ->
-            val conversationId = backStackEntry.arguments?.getString("conversationId") ?: ""
-            ChatScreen(
-                conversationId = conversationId,
-                onNavigateBack = { navController.popBackStack() },
-                onNavigateToProfile = { userId ->
-                    navController.navigate(Screen.Profile.createRoute(userId))
-                }
-            )
+
+        if (notes.isNotEmpty()) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(24.dp)
+            ) {
+                Text(
+                    notes.last(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)
+                )
+            }
         }
-        
-        // New Chat Screen
-        composable(Screen.NewChat.route) {
-            NewChatScreen(
-                onNavigateBack = { navController.popBackStack() },
-                onStartChat = { conversationId ->
-                    navController.navigate(Screen.Chat.createRoute(conversationId)) {
-                        popUpTo(Screen.NewChat.route) { inclusive = true }
-                    }
-                },
-                onCreateGroup = { },
-                onScanQr = { }
-            )
+    }
+
+    BackHandler(enabled = screen != Screen.Home) {
+        screen = Screen.Home
+    }
+}
+
+@Composable
+private fun LoadingScreen() {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(color = PrimaryPurple)
+            Spacer(Modifier.height(16.dp))
+            Text("Opening encrypted storage…", color = TextSecondary)
         }
-        
-        // Profile Screen
-        composable(
-            route = Screen.Profile.route,
-            arguments = listOf(
-                navArgument("userId") {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
-                }
+    }
+}
+
+@Composable
+private fun FailureScreen(reason: String) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(Icons.Filled.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(16.dp))
+            Text("Encrypted storage did not open", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                reason,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                textAlign = TextAlign.Center
             )
-        ) { backStackEntry ->
-            val userId = backStackEntry.arguments?.getString("userId")
-            val isOwnProfile = userId == null || userId == "me"
-            
-            ProfileScreen(
-                userId = if (isOwnProfile) null else userId,
-                onNavigateBack = { navController.popBackStack() },
-                onStartChat = if (isOwnProfile) null else { recipientId ->
-                    navController.navigate(Screen.Chat.createRoute(recipientId)) {
-                        popUpTo(Screen.Conversations.route)
-                    }
-                }
-            )
-        }
-        
-        // My Profile Screen
-        composable(Screen.MyProfile.route) {
-            ProfileScreen(
-                userId = null,
-                onNavigateBack = { navController.popBackStack() },
-                onStartChat = null
-            )
-        }
-        
-        // Settings Screen
-        composable(Screen.Settings.route) {
-            SettingsScreen(
-                onNavigateBack = { navController.popBackStack() },
-                onNavigateToProfile = { navController.navigate(Screen.MyProfile.route) },
-                onNavigateToPrivacy = { navController.navigate(Screen.PrivacySettings.route) },
-                onNavigateToNotifications = { navController.navigate(Screen.NotificationSettings.route) },
-                onNavigateToStorage = { navController.navigate(Screen.StorageSettings.route) },
-                onNavigateToHelp = { navController.navigate(Screen.Help.route) },
-                onNavigateToAbout = { navController.navigate(Screen.About.route) }
-            )
-        }
-        
-        // Privacy Settings
-        composable(Screen.PrivacySettings.route) {
-            PrivacySettingsScreen(
-                onNavigateBack = { navController.popBackStack() },
-                onNavigateToBlockedContacts = { navController.navigate(Screen.BlockedContacts.route) }
-            )
-        }
-        
-        // Notification Settings
-        composable(Screen.NotificationSettings.route) {
-            NotificationSettingsScreen(
-                onNavigateBack = { navController.popBackStack() }
-            )
-        }
-        
-        // Storage Settings - IMPLEMENTED
-        composable(Screen.StorageSettings.route) {
-            StorageSettingsScreen(
-                onNavigateBack = { navController.popBackStack() }
-            )
-        }
-        
-        // Blocked Contacts - IMPLEMENTED
-        composable(Screen.BlockedContacts.route) {
-            BlockedContactsScreen(
-                onNavigateBack = { navController.popBackStack() }
-            )
-        }
-        
-        // Help - IMPLEMENTED
-        composable(Screen.Help.route) {
-            HelpScreen(
-                onNavigateBack = { navController.popBackStack() }
-            )
-        }
-        
-        // About - IMPLEMENTED
-        composable(Screen.About.route) {
-            AboutScreen(
-                onNavigateBack = { navController.popBackStack() }
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Restart the phone and try again. If this keeps happening the database may have been " +
+                    "restored from a backup, which Ping refuses to read on purpose.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                textAlign = TextAlign.Center
             )
         }
     }
 }
+
+/** Optional app lock, on top of the phone's own lock screen. */
+@Composable
+private fun UnlockScreen(onUnlock: () -> Unit, onUnlockWithoutAuth: () -> Unit) {
+    val context = LocalContext.current
+    val activity = context as? androidx.fragment.app.FragmentActivity
+    var problem by remember { mutableStateOf<String?>(null) }
+    val authenticators = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        } else {
+            BiometricManager.Authenticators.BIOMETRIC_WEAK
+        }
+    }
+    val available = remember {
+        runCatching {
+            BiometricManager.from(context).canAuthenticate(authenticators) == BiometricManager.BIOMETRIC_SUCCESS
+        }.getOrDefault(false)
+    }
+
+    fun prompt() {
+        if (activity == null) {
+            problem = "This device has no usable screen lock."
+            return
+        }
+        val executor = ContextCompat.getMainExecutor(context)
+        val callback = object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                problem = null
+                onUnlock()
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                problem = errString.toString()
+            }
+        }
+        val builder = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Unlock Ping")
+            .setSubtitle("Your messages stay encrypted until you unlock")
+            .setAllowedAuthenticators(authenticators)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            builder.setNegativeButtonText("Cancel")
+        }
+        runCatching { BiometricPrompt(activity, executor, callback).authenticate(builder.build()) }
+            .onFailure { problem = it.message }
+    }
+
+    LaunchedEffect(Unit) { if (available) prompt() }
+
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(Icons.Filled.Lock, contentDescription = null, tint = PrimaryPurple, modifier = Modifier.size(48.dp))
+            Spacer(Modifier.height(20.dp))
+            Text("Ping is locked", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (available) "Unlock to read your messages." else "Set up a screen lock on this phone first.",
+                color = TextSecondary,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = {
+                    if (available) {
+                        prompt()
+                    } else {
+                        runCatching {
+                            context.startActivity(Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS))
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (available) "Unlock" else "Open security settings") }
+            if (!available) {
+                // Escape hatch: without this a phone with no biometrics and no screen lock can
+                // never open the app again once the lock is on.
+                TextButton(
+                    onClick = { onUnlockWithoutAuth() },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Turn off the app lock and continue") }
+            }
+            problem?.let {
+                Spacer(Modifier.height(16.dp))
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+private fun android.content.Context.displayNameOf(uri: Uri): String? = runCatching {
+    contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+    }
+}.getOrNull()

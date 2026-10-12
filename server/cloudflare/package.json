@@ -1,0 +1,16 @@
+{
+  "name": "ping-relay-cloudflare",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ping relay on Cloudflare Workers + Durable Objects. Relays end-to-end encrypted envelopes and stores nothing readable.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail",
+    "check": "node --check src/index.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

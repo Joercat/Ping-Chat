@@ -1,17 +1,24 @@
-<!-- res/xml/network_security_config.xml -->
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Defence in depth. Ping's own sockets (the LAN transport and the relay client) already refuse
+  plain HTTP to a public host, and OkHttp does not consult this file at all — but if anything
+  else ever uses the platform HTTP stack, this keeps it on TLS.
+
+  Cleartext stays allowed for the local network only: a private IP keeps its literal form
+  (Reachability by IP is handled by the app's own check), plus mDNS names such as
+  `raspberrypi.local`, which is how a home relay is usually reached.
+-->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-    
-    <!-- Allow local network for P2P -->
+
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">10.0.0.0</domain>
-        <domain includeSubdomains="true">192.168.0.0</domain>
-        <domain includeSubdomains="true">172.16.0.0</domain>
-        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="true">local</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
     </domain-config>
 </network-security-config>

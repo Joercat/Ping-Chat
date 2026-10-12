@@ -8,6 +8,23 @@ local.properties
 .idea/
 *.iml
 .gradle/
-gradle-wrapper.jar
 .DS_Store
 Thumbs.db
+
+# Build outputs / local
+.kotlin/
+app/schemas/
+*.apk
+*.aab
+out/
+
+# Python bytecode from the static checkers
+__pycache__/
+*.pyc
+
+# Cloudflare wrangler local dev state
+.wrangler/
+node_modules/
+
+# Kotlin compiler downloaded by tools/selftest/run.sh
+.selftest/

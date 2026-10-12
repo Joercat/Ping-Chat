@@ -1,62 +1,34 @@
 package com.ping.app
 
 import android.app.Application
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.os.Build
-import dagger.hilt.android.HiltAndroidApp
-import javax.inject.Inject
+import com.ping.app.di.AppGraph
+import com.ping.app.service.Notifications
+import com.ping.app.service.PingService
 
-@HiltAndroidApp
+/**
+ * Holds the one and only [AppGraph].
+ *
+ * Everything that needs an encrypted database, a socket or the Keystore asks this object. It is
+ * created as early as the process allows, because the boot receiver and notification replies come
+ * in without any activity being on screen.
+ */
 class PingApplication : Application() {
+
+    lateinit var graph: AppGraph
+        private set
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannels()
-    }
-
-    private fun createNotificationChannels() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager = getSystemService(NotificationManager::class.java)
-
-            // Messages channel
-            val messagesChannel = NotificationChannel(
-                CHANNEL_MESSAGES,
-                "Messages",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "New message notifications"
-                enableVibration(true)
-                enableLights(true)
-            }
-
-            // Service channel
-            val serviceChannel = NotificationChannel(
-                CHANNEL_SERVICE,
-                "Background Service",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Keeps Ping connected"
-            }
-
-            // File transfer channel
-            val transferChannel = NotificationChannel(
-                CHANNEL_TRANSFER,
-                "File Transfers",
-                NotificationManager.IMPORTANCE_DEFAULT
-            ).apply {
-                description = "File transfer progress"
-            }
-
-            notificationManager.createNotificationChannels(
-                listOf(messagesChannel, serviceChannel, transferChannel)
-            )
+        graph = AppGraph(this)
+        // Decrypted copies exist only so a viewer or a share target can read the file; they never
+        // outlive the app run that made them.
+        graph.attachments.clearExports()
+        Notifications.createChannels(this)
+        // Bring the pipe back up on its own after a reboot or an update. The service is
+        // best-effort: if the system refuses to start it in the background, the app still
+        // works whenever it is open and the next launch tries again.
+        if (graph.settings.current.onboardingComplete) {
+            PingService.start(this)
         }
-    }
-
-    companion object {
-        const val CHANNEL_MESSAGES = "ping_messages"
-        const val CHANNEL_SERVICE = "ping_service"
-        const val CHANNEL_TRANSFER = "ping_transfer"
     }
 }

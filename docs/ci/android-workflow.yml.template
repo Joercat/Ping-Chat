@@ -1,0 +1,163 @@
+# Ping — Android CI
+#
+# THIS FILE IS THE WORKFLOW. Copy it verbatim over .github/workflows/android.yml in the GitHub web
+# editor (open that file, pencil icon, select all, paste, commit). It lives here in docs/ci/
+# because automated tooling is not allowed to write workflow files — the comments below are the
+# only difference from the real file, and they cost nothing.
+#
+# Requires: android-actions/setup-android@v4 or newer. @v3 runs `sdkmanager tools`, which Google
+# has retired, so it fails with exit code 1 before any project step runs.
+#
+# What it does:
+#   1. runs the crypto/protocol self-tests (hundreds of assertions, plain JUnit, no device)
+#   2. runs the live relay suite against a Node relay started on the runner
+#   3. builds a debug APK and a release APK
+#   4. uploads both as artifacts
+#   5. on `main`, refreshes a rolling "latest" release you can download straight from the phone
+
+name: Android CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, test & package
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # NOTE: this must stay on @v4. @v3 runs `sdkmanager tools`, and Google retired the legacy
+      # `tools` package, so v3 fails with "Failed to find package 'tools'" / exit code 1 before any
+      # project step runs (android-actions/setup-android#537). v4 no longer requests it.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools"
+
+      # The runner image ships its own SDK and command-line tools; install exactly what this
+      # project compiles against instead of trusting an action's default package list. Accepting
+      # the licences is required for the platform/build-tools download to be allowed.
+      - name: Install the Android platform and build-tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
+          echo "sdk.dir=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}" > local.properties
+          sdkmanager --list_installed | sed -n '1,20p' || true
+
+      - name: Set up Node (for the relay end-to-end suite)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+          validate-wrappers: false
+
+      - name: Make the wrapper executable
+        run: chmod +x gradlew
+
+      - name: Start the relay
+        run: |
+          node server/node/server.js --port 8080 --host 127.0.0.1 --data /tmp/ping-relay.json &
+          for attempt in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/v1/health > /dev/null; then
+              echo "relay is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "relay did not start"; exit 1
+
+      - name: Unit tests (crypto, protocol, live relay)
+        env:
+          PING_RELAY: http://127.0.0.1:8080
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Stop the relay
+        if: always()
+        run: pkill -f "node server/node/server.js" || true
+
+      - name: Build debug APK
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Build release APK
+        run: ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Rename artifacts
+        run: |
+          mkdir -p out
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+          cp app/build/outputs/apk/debug/app-debug.apk "out/Ping-$VERSION-debug.apk" || true
+          cp app/build/outputs/apk/release/app-release.apk "out/Ping-$VERSION.apk" || true
+          ls -lh out
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ping-apks
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            app/build/reports/tests/**
+            app/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Publish rolling release (main only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest "out/Ping-$VERSION.apk" "out/Ping-$VERSION-debug.apk" \
+            --title "Ping $VERSION (latest build)" \
+            --notes "Automatic build of the latest \`main\`. Download **Ping-$VERSION.apk** and install it on your Android phone." \
+            --prerelease
+
+      # Branch builds refresh a small pre-release that holds the debug APK on its own. That turns
+      # "download a 56 MB artifact zip and unzip it on the phone" into one tap:
+      #   https://github.com/Joercat/Ping-Chat/releases/download/debug-latest/Ping-debug.apk
+      # It is a pre-release, so it never takes over the "Latest" slot the main branch owns, and the
+      # asset name is fixed so the URL above keeps working after a version bump.
+      - name: Publish the debug APK (branch builds)
+        if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view debug-latest > /dev/null 2>&1 || \
+            gh release create debug-latest --prerelease --title "Ping debug APK (auto)" \
+              --notes "Automatic **debug** build of the newest branch push. Install Ping-debug.apk on the phone: it is signed with the project key (app/keystore/ping.p12), so it installs over earlier builds of com.ping.app without uninstalling. The release APK is what a normal install should use."
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+          cp "out/Ping-$VERSION-debug.apk" out/Ping-debug.apk
+          gh release upload debug-latest out/Ping-debug.apk --clobber

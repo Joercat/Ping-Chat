@@ -1,49 +1,33 @@
-# proguard-rules.pro
+# R8 rules for Ping. The release build does not minify (see app/build.gradle.kts), so these
+# mostly matter if R8 is ever switched on — but the keeps below are the ones that would bite.
 
-# Keep serialization
--keepattributes *Annotation*, InnerClasses
--dontnote kotlinx.serialization.AnnotationsKt
+# ---- Bouncy Castle ---------------------------------------------------------------------
+# Loaded reflectively at runtime (org.bouncycastle.jce.provider.BouncyCastleProvider) and used
+# through the JCE, so the provider and its algorithm implementations must survive shrinking.
+-keep class org.bouncycastle.** { *; }
+-dontwarn org.bouncycastle.**
+-dontwarn javax.naming.**
 
--keepclassmembers class kotlinx.serialization.json.** {
-    *** Companion;
-}
--keepclasseswithmembers class kotlinx.serialization.json.** {
-    kotlinx.serialization.KSerializer serializer(...);
-}
+# ---- SQLCipher -------------------------------------------------------------------------
+# The native library is loaded by the framework class itself; the loader must not be renamed.
+-keep class net.zetetic.database.** { *; }
+-keep class net.zetetic.database.sqlcipher.SQLiteDatabase { *; }
+-dontwarn net.zetetic.**
 
--keep,includedescriptorclasses class com.ping.app.**$$serializer { *; }
+# ---- QR scanning (zxing-android-embedded) ----------------------------------------------
+-keep class com.journeyapps.barcodescanner.** { *; }
+-keep class com.google.zxing.** { *; }
+-dontwarn com.google.zxing.**
+
+# ---- AndroidX / Compose internals that reflectively look things up ----------------------
+-keepattributes *Annotation*, InnerClasses, Signature, Exceptions
+-keep class androidx.lifecycle.DefaultLifecycleObserver
+-keep class androidx.core.app.NotificationCompat { *; }
+
+# ---- The app's own reflection-free-but-enumerated types -------------------------------
+# Kept so that a future minified build cannot break the state machine by stripping enums or
+# companion objects that are only referenced from debug tooling.
+-keepclassmembers enum com.ping.app.** { *; }
 -keepclassmembers class com.ping.app.** {
     *** Companion;
 }
--keepclasseswithmembers class com.ping.app.** {
-    kotlinx.serialization.KSerializer serializer(...);
-}
-
-# Netty
--keepattributes Signature,InnerClasses
--keepclasseswithmembers class io.netty.** { *; }
--keepnames class io.netty.** { *; }
--dontwarn io.netty.**
-
-# Bouncy Castle
--keep class org.bouncycastle.** { *; }
--dontwarn org.bouncycastle.**
-
-# Room
--keep class * extends androidx.room.RoomDatabase
--keep @androidx.room.Entity class *
--dontwarn androidx.room.paging.**
-
-# Hilt
--keep class dagger.hilt.** { *; }
--keep class javax.inject.** { *; }
--keep class * extends dagger.hilt.android.internal.managers.ComponentSupplier { *; }
--keep class * extends dagger.hilt.android.internal.managers.ViewComponentManager$FragmentContextWrapper { *; }
-
-# Compose
--keep class androidx.compose.** { *; }
--dontwarn androidx.compose.**
-
-# Coil
--keep class coil.** { *; }
--dontwarn coil.**
