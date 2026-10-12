@@ -124,8 +124,9 @@ all found by reading the code paths rather than guessing:
   `OFFLINE_GRACE_MS` (20 s) of failed polls. Blips that used to show for ~10 s are gone.
 * **"Offline" for no reason, then back about 10 seconds later.** The same flag was set by the
   keep-alive probe, by `register()`, and by any single error string. Those now only record the
-  reason. Only the poll loop decides reachability, and the home screen and the status-bar
-  notification both read that decision (`lastSyncAt == 0` means "connecting", not "offline").
+  reason. Only the poll loop decides reachability: it sets an explicit `offline` flag once polls have
+  failed for the grace period, and the home screen and the status-bar notification read that flag
+  (no flag and no connection yet means "connecting", never "offline").
 * **No notification for new messages.** Two causes. (1) The active-chat suppression was set when a
   chat screen was shown and never cleared when the app went to the background, so a chat left open
   silenced its own notifications. It now only applies while the app is resumed. (2) When Android

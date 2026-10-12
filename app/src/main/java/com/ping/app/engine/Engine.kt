@@ -44,6 +44,8 @@ import java.io.InputStream
 data class EngineState(
     val relayConfigured: Boolean = false,
     val relayReachable: Boolean = false,
+    /** True only after polls have failed for a while (see Engine.OFFLINE_GRACE_MS). */
+    val offline: Boolean = false,
     val lastError: String? = null,
     val lanPeers: Int = 0,
     val queued: Int = 0,
@@ -219,7 +221,7 @@ class Engine(private val graph: AppGraph) {
             graph.onDb { cryptoStore.markPreKeysPublished(unpublished.map { it.first }) }
             settings.setPreKeyPublication(System.currentTimeMillis(), signedPreKey.id)
             settings.setRelayLastSeen(System.currentTimeMillis())
-            update { it.copy(relayConfigured = true, relayReachable = true, lastError = null) }
+            update { it.copy(relayConfigured = true, relayReachable = true, offline = false, lastError = null) }
             null
         } catch (t: Throwable) {
             val message = t.message ?: "relay unavailable"
@@ -288,7 +290,7 @@ class Engine(private val graph: AppGraph) {
             failingSince = 0L
             backoff = POLL_BACKOFF_MIN_MS
             pollNonce = result.nextNonce
-            update { it.copy(relayReachable = true, lastError = null, lastSyncAt = System.currentTimeMillis()) }
+            update { it.copy(relayReachable = true, offline = false, lastError = null, lastSyncAt = System.currentTimeMillis()) }
             if (result.envelopes.isEmpty()) continue
 
             val (ids, stuck) = processArrivals(result.envelopes)
@@ -347,10 +349,12 @@ class Engine(private val graph: AppGraph) {
 
     /** A failed poll only becomes "offline" once it has gone on for [OFFLINE_GRACE_MS]. */
     private fun noteRelayFailure(message: String, failingFor: Long) {
+        val offline = failingFor >= OFFLINE_GRACE_MS
         update {
             it.copy(
                 lastError = message,
-                relayReachable = if (failingFor >= OFFLINE_GRACE_MS) false else it.relayReachable
+                offline = offline,
+                relayReachable = if (offline) false else it.relayReachable
             )
         }
     }
@@ -464,7 +468,7 @@ class Engine(private val graph: AppGraph) {
             settings.setRelayLastSeen(System.currentTimeMillis())
             // `lastSyncAt` is left alone on purpose: it means "envelopes were collected", and a
             // health request must not make the screen claim a sync that never happened.
-            update { it.copy(relayReachable = true, lastError = null) }
+            update { it.copy(relayReachable = true, offline = false, lastError = null) }
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {
@@ -488,7 +492,7 @@ class Engine(private val graph: AppGraph) {
         try {
             graph.relay.probe(wake = true)
             settings.setRelayLastSeen(System.currentTimeMillis())
-            update { it.copy(relayReachable = true, lastError = null) }
+            update { it.copy(relayReachable = true, offline = false, lastError = null) }
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {

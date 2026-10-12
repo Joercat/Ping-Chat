@@ -65,8 +65,8 @@ class PingService : Service() {
                     !state.relayConfigured && state.lanPeers == 0 -> "Local network only"
                     !state.relayConfigured -> "Local network · ${state.lanPeers} peer(s)"
                     state.relayReachable -> "Connected" + if (state.queued > 0) " · ${state.queued} queued" else ""
-                    state.lastSyncAt == 0L -> "Connecting…"
-                    else -> "Offline — retrying"
+                    state.offline -> "Offline — retrying"
+                    else -> "Connecting…"
                 }
                 graph.notifications.updateServiceNotification("Ping", text)
             }

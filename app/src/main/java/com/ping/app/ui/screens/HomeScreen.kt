@@ -130,8 +130,8 @@ private fun connectionLabel(state: com.ping.app.engine.EngineState, hasRelay: Bo
     !hasRelay -> "Local network only"
     state.relayReachable && state.queued > 0 -> "Connected · ${state.queued} waiting"
     state.relayReachable -> "End-to-end encrypted"
-    state.lastSyncAt == 0L -> "Connecting…"
-    else -> "Offline — retrying"
+    state.offline -> "Offline — retrying"
+    else -> "Connecting…"
 }
 
 @Composable
