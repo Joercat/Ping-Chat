@@ -143,3 +143,21 @@ jobs:
             --title "Ping $VERSION (latest build)" \
             --notes "Automatic build of the latest \`main\`. Download **Ping-$VERSION.apk** and install it on your Android phone." \
             --prerelease
+
+      # Branch builds refresh a small pre-release that holds the debug APK on its own. That turns
+      # "download a 56 MB artifact zip and unzip it on the phone" into one tap:
+      #   https://github.com/Joercat/Ping-Chat/releases/download/debug-latest/Ping-debug.apk
+      # It is a pre-release, so it never takes over the "Latest" slot the main branch owns, and the
+      # asset name is fixed so the URL above keeps working after a version bump.
+      - name: Publish the debug APK (branch builds)
+        if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view debug-latest > /dev/null 2>&1 || \
+            gh release create debug-latest --prerelease --title "Ping debug APK (auto)" \
+              --notes "Automatic **debug** build of the newest branch push. Install Ping-debug.apk on the phone: it is signed with the project key (app/keystore/ping.p12), so it installs over earlier builds of com.ping.app without uninstalling. The release APK is what a normal install should use."
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+          cp "out/Ping-$VERSION-debug.apk" out/Ping-debug.apk
+          gh release upload debug-latest out/Ping-debug.apk --clobber
