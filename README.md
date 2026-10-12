@@ -18,12 +18,19 @@ a kind byte and a length.
 
 1. Get the APK. The pipeline in `.github/workflows/android.yml` is green and builds both APKs
    (tests included) on every push:
-   * **From a branch:** GitHub → **Actions** → the newest green *Build, test & package* run →
-     **Artifacts → `ping-apks`**. Inside are `Ping-2.0.0.apk` (install this one) and
-     `Ping-2.0.0-debug.apk`.
+   * **One tap, from a branch:** every branch push refreshes a pre-release that holds the debug APK
+     on its own, so a phone can open
+     `https://github.com/Joercat/Ping-Chat/releases/download/debug-latest/Ping-debug.apk` and install
+     it without unzipping anything.
+   * **From a branch, by hand:** GitHub → **Actions** → the newest green *Build, test & package* run →
+     **Artifacts → `ping-apks`**. Inside are `Ping-2.1.0.apk` (the release build) and
+     `Ping-2.1.0-debug.apk`.
    * **From `main`:** every push to `main` also publishes **Releases → latest**, so the phone can
-     open `https://github.com/Joercat/Ping-Chat/releases/download/latest/Ping-2.0.0.apk` directly.
-2. Open the APK on the phone and allow installing unknown apps once.
+     open `https://github.com/Joercat/Ping-Chat/releases/download/latest/Ping-2.1.0.apk` directly.
+2. Open the APK on the phone and allow installing unknown apps once. Both builds are signed with the
+   project key committed in `app/keystore/`, so an update installs over the previous build instead of
+   asking for an uninstall first — and a debug build can replace a release build, or the other way
+   round.
 3. Optional but recommended: deploy the relay (three minutes, free) and paste its URL into
    **Settings → Relay address**. The quickest way is Render's free plan — Dashboard → **New +** →
    **Blueprint** → pick this repository; `render.yaml` does the rest (`docs/DEPLOY.md` has the
