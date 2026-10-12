@@ -213,9 +213,26 @@ private fun MainNavigation(controller: PingController, deepLink: MutableStateFlo
     val notes by controller.notes.collectAsStateWithLifecycle()
     val link by deepLink.collectAsStateWithLifecycle()
 
-    // Tell the engine which conversation is on screen, so it stays quiet about that one.
+    // Tell the engine which conversation is on screen, so it stays quiet about that one. Only while
+    // the app is really in front: a chat left open in the background must still notify.
     val activeConversation = (screen as? Screen.Chat)?.conversationId
-    LaunchedEffect(activeConversation) { graph.activeConversation.value = activeConversation }
+    val chatLifecycle = LocalLifecycleOwner.current
+    DisposableEffect(chatLifecycle, activeConversation) {
+        graph.activeConversation.value =
+            if (chatLifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) activeConversation else null
+        val observer = LifecycleEventObserver { _, event ->
+            graph.activeConversation.value = when (event) {
+                Lifecycle.Event.ON_RESUME -> activeConversation
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> null
+                else -> graph.activeConversation.value
+            }
+        }
+        chatLifecycle.lifecycle.addObserver(observer)
+        onDispose {
+            chatLifecycle.lifecycle.removeObserver(observer)
+            if (graph.activeConversation.value == activeConversation) graph.activeConversation.value = null
+        }
+    }
 
     LaunchedEffect(notes) {
         if (notes.isNotEmpty()) {

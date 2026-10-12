@@ -109,6 +109,20 @@ class Notifications(private val context: Context, private val settings: Settings
         }
     }
 
+    /**
+     * False when Android itself will not show Ping's message notifications: the permission was
+     * refused, or the user switched the channel off. Without this check that failure is silent.
+     */
+    fun allowed(): Boolean {
+        if (!manager.areNotificationsEnabled()) return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = context.getSystemService(NotificationManager::class.java)
+                ?.getNotificationChannel(MESSAGES_CHANNEL)
+            if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) return false
+        }
+        return true
+    }
+
     fun notifyMessage(conversationId: String, title: String, body: String) {
         val openIntent = Intent(context, MainActivity::class.java).apply {
             action = Intent.ACTION_VIEW

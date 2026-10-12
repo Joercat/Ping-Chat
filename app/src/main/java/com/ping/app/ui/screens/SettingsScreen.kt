@@ -39,6 +39,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.app.NotificationManagerCompat
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -171,6 +173,24 @@ fun SettingsScreen(controller: PingController, onBack: () -> Unit) {
                 checked = settings.notificationsEnabled,
                 onChange = { controller.setNotifications(it) }
             )
+            // Ping's own switch can be on while Android refuses to show anything. That used to be a
+            // silent failure; now it is said out loud, with a way to fix it.
+            val notificationContext = LocalContext.current
+            val systemAllowsNotifications = NotificationManagerCompat.from(notificationContext).areNotificationsEnabled()
+            if (settings.notificationsEnabled && !systemAllowsNotifications) {
+                Text(
+                    "Android is blocking Ping's notifications, so new messages arrive without an alert. " +
+                        "Allow notifications for Ping in Android's settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+                TextButton(onClick = {
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, notificationContext.packageName)
+                    notificationContext.startActivity(intent)
+                }) { Text("Open notification settings") }
+            }
             SwitchRow(
                 title = "Show message text in notifications",
                 checked = settings.notificationPreview,

@@ -33,6 +33,11 @@ data class OutboxEntry(
  * is not enough to impersonate a device — an attacker would need the phone's secure hardware.
  */
 class CryptoStore(private val db: Db, private val vault: Vault) {
+    private companion object {
+        const val ATTACHMENT_COLUMNS =
+            "id, transfer_id, message_id, conversation_id, file_name, mime, size, chunk_count, sha256, file_key, outgoing, path, status, chunk_bits, transfer_error"
+    }
+
 
     // ------------------------------------------------------------------ sessions
 
@@ -218,8 +223,8 @@ class CryptoStore(private val db: Db, private val vault: Vault) {
         """
         INSERT OR REPLACE INTO attachments
             (id, transfer_id, message_id, conversation_id, file_name, mime, size, chunk_count, sha256,
-             file_key, outgoing, path, received_chunks, status)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             file_key, outgoing, path, received_chunks, status, chunk_bits, transfer_error)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)
         """.trimIndent(),
         arrayOf<Any?>(
             record.id,
@@ -234,29 +239,59 @@ class CryptoStore(private val db: Db, private val vault: Vault) {
             vault.seal(record.fileKey),
             if (record.outgoing) 1 else 0,
             record.path?.let { vault.sealString(it) },
-            record.receivedChunks,
-            record.status
+            record.status,
+            record.chunkBits,
+            record.transferError
         )
     )
 
     fun attachment(id: String): AttachmentRecord? = db.queryOne(
-        "SELECT id, transfer_id, message_id, conversation_id, file_name, mime, size, chunk_count, sha256, file_key, outgoing, path, received_chunks, status FROM attachments WHERE id = ?",
+        "SELECT $ATTACHMENT_COLUMNS FROM attachments WHERE id = ?",
         arrayOf(id)
     ) { cursorToAttachment(it) }
 
     fun attachmentByTransferId(transferId: String): AttachmentRecord? = db.queryOne(
-        "SELECT id, transfer_id, message_id, conversation_id, file_name, mime, size, chunk_count, sha256, file_key, outgoing, path, received_chunks, status FROM attachments WHERE transfer_id = ?",
+        "SELECT $ATTACHMENT_COLUMNS FROM attachments WHERE transfer_id = ?",
         arrayOf(transferId)
+    ) { cursorToAttachment(it) }
+
+    /** The transfer that belongs to a message. Transfers and messages share their id space by design. */
+    fun attachmentByMessage(messageId: String): AttachmentRecord? = db.queryOne(
+        "SELECT $ATTACHMENT_COLUMNS FROM attachments WHERE message_id = ? LIMIT 1",
+        arrayOf(messageId)
+    ) { cursorToAttachment(it) }
+
+    /** Outgoing transfers that have not been fully sent, for picking up after a restart. */
+    fun outgoingAttachments(): List<AttachmentRecord> = db.query(
+        "SELECT $ATTACHMENT_COLUMNS FROM attachments WHERE outgoing = 1",
+        emptyArray()
     ) { cursorToAttachment(it) }
 
     fun setAttachmentPath(id: String, path: String) =
         db.exec("UPDATE attachments SET path = ? WHERE id = ?", arrayOf<Any?>(vault.sealString(path), id))
 
-    fun setAttachmentReceivedChunks(id: String, count: Int, status: Int = 0) =
-        db.exec("UPDATE attachments SET received_chunks = ?, status = ? WHERE id = ?", arrayOf<Any?>(count, status, id))
+    /** Marks one chunk of a transfer done and returns how many chunks are done now. */
+    fun markChunk(messageId: String, index: Int, chunkCount: Int): Int {
+        val current = db.queryOne("SELECT chunk_bits FROM attachments WHERE message_id = ?", arrayOf<Any?>(messageId)) {
+            it.getBlob(0)
+        } ?: ByteArray(0)
+        val bits = ChunkBits.withBit(current, chunkCount, index)
+        db.exec("UPDATE attachments SET chunk_bits = ? WHERE message_id = ?", arrayOf<Any?>(bits, messageId))
+        return ChunkBits.count(bits, chunkCount)
+    }
+
+    /** The reason the transfer is stuck right now, or null once it moves again. */
+    fun setTransferError(messageId: String, error: String?) =
+        db.exec("UPDATE attachments SET transfer_error = ? WHERE message_id = ?", arrayOf<Any?>(error?.take(200), messageId))
 
     fun setAttachmentStatus(id: String, status: Int) =
         db.exec("UPDATE attachments SET status = ? WHERE id = ?", arrayOf<Any?>(status, id))
+
+    /** Drops every queued row of one transfer: the announcement and all of its chunks. */
+    fun removeTransferRows(messageId: String) = db.exec(
+        "DELETE FROM outbox WHERE id = ? OR id LIKE ?",
+        arrayOf<Any?>("attachment:$messageId", "chunk:$messageId:%")
+    )
 
     fun attachmentCount(): Int = db.queryOne("SELECT COUNT(*) FROM attachments") { it.getInt(0) } ?: 0
 
@@ -273,8 +308,9 @@ class CryptoStore(private val db: Db, private val vault: Vault) {
         fileKey = vault.open(cursor.getBlob(9)),
         outgoing = cursor.getInt(10) == 1,
         path = cursor.getBlob(11)?.let { vault.openString(it) },
-        receivedChunks = cursor.getInt(12),
-        status = cursor.getInt(13)
+        status = cursor.getInt(12),
+        chunkBits = cursor.getBlob(13) ?: ByteArray(0),
+        transferError = cursor.getString(14)
     )
 
     // ------------------------------------------------------------------ relay acks

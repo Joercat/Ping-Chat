@@ -1,6 +1,6 @@
 # Project status
 
-_Last updated: 2026-10-11 (eighth revision: group chats with sender-key encryption, a mobile-first
+_Last updated: 2026-10-12 (ninth revision: offline/notification/transfer fixes; earlier — eighth revision: group chats with sender-key encryption, a mobile-first
 round of UI and reliability fixes, one signed-for-updates APK, and the project relay as the default)_
 
 ## What is verified, and how
@@ -109,6 +109,52 @@ expects exactly `app/src/main/AndroidManifest.xml`; `res/` holds resources only.
 file itself parses with the service and both receivers in place.
 
 Found via the annotation mechanism described below — no log copying needed.
+
+### Run 9 (2026-10-12) — "offline" when a message arrived, no alerts, and invisible file transfers
+
+Reported on a phone with the debug APK from the `debug-latest` link. Four symptoms, four causes,
+all found by reading the code paths rather than guessing:
+
+* **"Offline" the moment a message came in.** The poll loop ran message handling *inside* the
+  network `try`. Any failure while handling a message fell into the network error handler, which
+  set `relayReachable = false`. Separately, the relay spends a poll's nonce when the phone acks the
+  messages, and the client reused it for the next poll: the relay answered `bad_nonce`, which also
+  looked like an outage. Fixed: the poll loop now separates the network from message handling
+  (`processArrivals`), acknowledgement clears the spent nonce, and "offline" only appears after
+  `OFFLINE_GRACE_MS` (20 s) of failed polls. Blips that used to show for ~10 s are gone.
+* **"Offline" for no reason, then back about 10 seconds later.** The same flag was set by the
+  keep-alive probe, by `register()`, and by any single error string. Those now only record the
+  reason. Only the poll loop decides reachability, and the home screen and the status-bar
+  notification both read that decision (`lastSyncAt == 0` means "connecting", not "offline").
+* **No notification for new messages.** Two causes. (1) The active-chat suppression was set when a
+  chat screen was shown and never cleared when the app went to the background, so a chat left open
+  silenced its own notifications. It now only applies while the app is resumed. (2) When Android
+  itself blocked notifications, nothing said so. `Notifications.allowed()` now checks the system
+  permission and channel; Engine says so once, and Settings shows a button to the system settings.
+* **File transfers with no progress and no errors.**
+  * Chunks could be sent *before* the announcement that tells the receiver about the file, and the
+    receiver silently dropped them. The announcement now always goes first; chunks are only queued
+    behind it.
+  * The receiver tracked "highest chunk index" as progress, so out-of-order chunks could report a
+    file complete while pieces were missing and then fail the digest check. Progress is now a bit
+    map (`ChunkBits`, one bit per chunk, both directions), which counts distinct chunks.
+  * Outbound sends had no lock, so the outbox and an attachment sender could encrypt on the same
+    ratchet at once. All relay sends now go through one mutex.
+  * The bubble now shows a progress bar and a percentage, the reason a transfer is waiting
+    (`transfer_error`), and a **Retry sending** button when it gave up. A retry sends only the
+    chunks the receiver does not have. Unfinished outgoing transfers resume after a restart.
+  * Schema: `attachments.chunk_bits BLOB`, `attachments.transfer_error TEXT`, added by a migration
+    that back-fills old rows from the old counter.
+
+Also: an envelope that keeps failing to process is retried up to five times and then skipped, so
+one bad message can no longer stall everything behind it.
+
+**Checks:** all five static checkers are at zero findings, and `ChunkBitsTest` covers out-of-order
+arrival, duplicates, the widening of short arrays and out-of-range indices. The Android build and
+the unit tests run in CI on this commit.
+
+**Not done, and why:** end-to-end delivery on a real phone cannot be observed from the sandbox;
+it needs the device check listed under "First thing to do next".
 
 ### Run 8 (2026-10-11) — group chats, and three more silent-failure classes closed
 

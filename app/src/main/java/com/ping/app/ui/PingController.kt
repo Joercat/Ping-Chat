@@ -282,6 +282,8 @@ class PingController(val graph: AppGraph) {
 
     fun retryMessage(messageId: String) = run { graph.engine.retryMessage(messageId) }
 
+    fun retryAttachment(messageId: String) = run { graph.engine.retryAttachment(messageId) }
+
     fun deleteMessage(messageId: String) = run { graph.engine.deleteMessageForEveryone(messageId) }
 
     fun markRead(conversationId: String, peerHash: String) = run {

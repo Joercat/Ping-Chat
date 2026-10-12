@@ -43,6 +43,33 @@ class Db(context: Context, passphrase: ByteArray) : AutoCloseable {
         if ("group_id" !in columns) {
             exec("ALTER TABLE conversations ADD COLUMN group_id TEXT")
         }
+        val attachmentColumns = columnsOf("attachments")
+        val addedBits = "chunk_bits" !in attachmentColumns
+        if (addedBits) exec("ALTER TABLE attachments ADD COLUMN chunk_bits BLOB")
+        if ("transfer_error" !in attachmentColumns) exec("ALTER TABLE attachments ADD COLUMN transfer_error TEXT")
+        if (addedBits) backfillChunkBits()
+    }
+
+    private data class LegacyTransfer(val id: String, val chunkCount: Int, val received: Int, val outgoing: Boolean)
+
+    /**
+     * Transfers from before the bit map kept a count of received chunks. A finished one (or any
+     * outgoing one, which was then always shown as sent) becomes all-done; a partial incoming one
+     * keeps its first chunks.
+     */
+    private fun backfillChunkBits() {
+        val legacy = query(
+            "SELECT id, chunk_count, received_chunks, outgoing FROM attachments WHERE chunk_bits IS NULL"
+        ) { LegacyTransfer(it.getString(0), it.getInt(1), it.getInt(2), it.getInt(3) == 1) }
+        for (transfer in legacy) {
+            var bits = ChunkBits.empty(transfer.chunkCount)
+            if (transfer.outgoing || transfer.received >= transfer.chunkCount) {
+                bits = ChunkBits.full(transfer.chunkCount)
+            } else {
+                for (index in 0 until transfer.received) bits = ChunkBits.withBit(bits, transfer.chunkCount, index)
+            }
+            exec("UPDATE attachments SET chunk_bits = ? WHERE id = ?", arrayOf<Any?>(bits, transfer.id))
+        }
     }
 
     /** Column names of a table, for the migration above and for tests. */
@@ -194,7 +221,9 @@ class Db(context: Context, passphrase: ByteArray) : AutoCloseable {
                 outgoing INTEGER NOT NULL,
                 path BLOB,
                 received_chunks INTEGER NOT NULL DEFAULT 0,
-                status INTEGER NOT NULL DEFAULT 0
+                status INTEGER NOT NULL DEFAULT 0,
+                chunk_bits BLOB,
+                transfer_error TEXT
             )
             """.trimIndent()
         )

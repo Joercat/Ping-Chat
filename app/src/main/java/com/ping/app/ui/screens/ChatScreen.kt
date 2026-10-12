@@ -39,6 +39,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
@@ -127,6 +129,7 @@ fun ChatScreen(
                 runCatching { saveLauncher.launch(record.fileName) }
                     .onFailure { Toast.makeText(context, "Could not save the file", Toast.LENGTH_SHORT).show() }
             }
+            AttachmentAction.RETRY -> controller.retryAttachment(record.messageId)
         }
     }
     val messages by controller.messages(conversationId).collectAsState(initial = null)
@@ -440,7 +443,7 @@ private fun MessageBubble(
 }
 
 /** What a tap or a long press on an attachment can ask for. */
-internal enum class AttachmentAction { OPEN, SAVE, SHARE }
+internal enum class AttachmentAction { OPEN, SAVE, SHARE, RETRY }
 
 /**
  * Decrypts an attachment and hands the copy to [then].
@@ -488,13 +491,14 @@ private fun AttachmentBody(
         Text("File", color = if (outgoing) Color.White else MaterialTheme.colorScheme.onSurface)
         return
     }
-    if (attachment.mimeType.startsWith("image/")) {
+    val failed = message.status == MessageStatus.FAILED
+    // A transfer that is still moving (or stuck) shows its progress instead of a preview.
+    val transferring = attachment.doneChunks < attachment.chunkCount && attachment.status != 2
+    if (attachment.mimeType.startsWith("image/") && attachment.complete && !transferring) {
         var bitmap by remember(attachment.id) { mutableStateOf<Bitmap?>(null) }
-        LaunchedEffect(attachment.id, attachment.status) {
-            if (attachment.complete) {
-                controller.loadAttachment(attachment) { bytes ->
-                    bitmap = bytes?.let { decodeSampled(it, 1080) }
-                }
+        LaunchedEffect(attachment.id, attachment.complete) {
+            controller.loadAttachment(attachment) { bytes ->
+                bitmap = bytes?.let { decodeSampled(it, 1080) }
             }
         }
         val current = bitmap
@@ -512,18 +516,26 @@ private fun AttachmentBody(
                     )
             )
         } else {
-            AttachmentChip(
-                attachment = attachment,
-                outgoing = outgoing,
-                onAction = { onAction(attachment, it) }
-            )
+            AttachmentChip(attachment = attachment, outgoing = outgoing, failed = failed, onAction = { onAction(attachment, it) })
         }
     } else {
-        AttachmentChip(
-            attachment = attachment,
-            outgoing = outgoing,
-            onAction = { onAction(attachment, it) }
-        )
+        AttachmentChip(attachment = attachment, outgoing = outgoing, failed = failed, onAction = { onAction(attachment, it) })
+    }
+}
+
+/** The words under a file name: how far the transfer has got, and why it is stuck if it is. */
+private fun attachmentStatusText(attachment: AttachmentRecord, failed: Boolean): String {
+    val total = attachment.chunkCount.coerceAtLeast(1)
+    val percent = attachment.doneChunks * 100 / total
+    val progress = "$percent% · ${attachment.doneChunks} of ${attachment.chunkCount} pieces"
+    val reason = attachment.transferError?.let { "\n$it" }.orEmpty()
+    return when {
+        attachment.status == 2 -> "Could not be verified"
+        failed && attachment.outgoing -> "Not sent · $progress$reason"
+        failed -> "Stopped · $progress"
+        attachment.outgoing && attachment.doneChunks < attachment.chunkCount -> "Sending · $progress$reason"
+        attachment.doneChunks < attachment.chunkCount -> "Receiving · $progress"
+        else -> "${attachment.size / 1024} KB · tap to open"
     }
 }
 
@@ -531,65 +543,86 @@ private fun AttachmentBody(
 private fun AttachmentChip(
     attachment: AttachmentRecord,
     outgoing: Boolean,
+    failed: Boolean,
     onAction: (AttachmentAction) -> Unit
 ) {
     var menu by remember { mutableStateOf(false) }
-    Box {
-    Row(
-        modifier = Modifier.combinedClickable(
-            onClick = { if (attachment.complete) onAction(AttachmentAction.OPEN) },
-            onLongClick = { if (attachment.complete) menu = true }
-        ),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            Icons.Filled.InsertDriveFile,
-            contentDescription = null,
-            tint = if (outgoing) Color.White else PrimaryPurple,
-            modifier = Modifier.size(28.dp)
-        )
-        Spacer(Modifier.size(8.dp))
-        Column {
-            Text(
-                attachment.fileName,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (outgoing) Color.White else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = when {
-                    attachment.status == 2 -> "Could not be verified"
-                    attachment.complete -> "${attachment.size / 1024} KB · tap to open"
-                    else -> "${attachment.receivedChunks}/${attachment.chunkCount} received"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = if (outgoing) Color.White.copy(alpha = 0.8f) else TextSecondary
-            )
-        }
+    val transferring = attachment.doneChunks < attachment.chunkCount && attachment.status != 2
+    val ready = attachment.complete && !transferring
+    val textColor = if (outgoing) Color.White else MaterialTheme.colorScheme.onSurface
+    val subColor = when {
+        failed -> if (outgoing) Color.White else MaterialTheme.colorScheme.error
+        outgoing -> Color.White.copy(alpha = 0.8f)
+        else -> TextSecondary
     }
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            DropdownMenuItem(
-                text = { Text("Open") },
-                onClick = {
-                    menu = false
-                    onAction(AttachmentAction.OPEN)
+    Column {
+        Box {
+            Row(
+                modifier = Modifier.combinedClickable(
+                    onClick = { if (ready) onAction(AttachmentAction.OPEN) },
+                    onLongClick = { if (ready) menu = true }
+                ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Filled.InsertDriveFile,
+                    contentDescription = null,
+                    tint = if (outgoing) Color.White else PrimaryPurple,
+                    modifier = Modifier.size(28.dp)
+                )
+                Spacer(Modifier.size(8.dp))
+                Column(modifier = Modifier.widthIn(max = 220.dp)) {
+                    Text(
+                        attachment.fileName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = textColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = attachmentStatusText(attachment, failed),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = subColor
+                    )
+                    if (transferring && !failed) {
+                        Spacer(Modifier.height(4.dp))
+                        LinearProgressIndicator(
+                            progress = attachment.doneChunks.toFloat() / attachment.chunkCount.coerceAtLeast(1),
+                            modifier = Modifier.fillMaxWidth(),
+                            color = if (outgoing) Color.White else PrimaryPurple,
+                            trackColor = if (outgoing) Color.White.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    }
                 }
-            )
-            DropdownMenuItem(
-                text = { Text("Save to phone") },
-                onClick = {
-                    menu = false
-                    onAction(AttachmentAction.SAVE)
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Share") },
-                onClick = {
-                    menu = false
-                    onAction(AttachmentAction.SHARE)
-                }
-            )
+            }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Open") },
+                    onClick = {
+                        menu = false
+                        onAction(AttachmentAction.OPEN)
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Save to phone") },
+                    onClick = {
+                        menu = false
+                        onAction(AttachmentAction.SAVE)
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Share") },
+                    onClick = {
+                        menu = false
+                        onAction(AttachmentAction.SHARE)
+                    }
+                )
+            }
+        }
+        if (failed && outgoing) {
+            TextButton(onClick = { onAction(AttachmentAction.RETRY) }) {
+                Text("Retry sending", color = if (outgoing) Color.White else PrimaryPurple)
+            }
         }
     }
 }

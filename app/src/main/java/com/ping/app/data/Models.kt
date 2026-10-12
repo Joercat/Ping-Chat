@@ -78,10 +78,17 @@ data class AttachmentRecord(
     val fileKey: ByteArray,
     val outgoing: Boolean,
     val path: String?,
-    val receivedChunks: Int,
+    /** One bit per chunk: sent (outgoing transfers) or received (incoming). See [ChunkBits]. */
+    val chunkBits: ByteArray = ByteArray(0),
+    /** Why the last attempt to move the rest of this file stopped, while it is still stuck. */
+    val transferError: String? = null,
     val status: Int
 ) {
-    val complete: Boolean get() = receivedChunks >= chunkCount && path != null
+    /** Chunks sent (outgoing) or received (incoming) so far. */
+    val doneChunks: Int get() = ChunkBits.count(chunkBits, chunkCount)
+
+    /** Whether the file can be opened: an outgoing copy is local from the start, an incoming one once it is whole. */
+    val complete: Boolean get() = path != null && (outgoing || doneChunks >= chunkCount)
 }
 
 /** A group chat: a name, a roster and the epoch key currently in use. */
